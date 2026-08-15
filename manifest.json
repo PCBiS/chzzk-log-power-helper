@@ -3,7 +3,7 @@
   "name": "치지직 통나무 파워 자동 획득 (Firefox)",
   "version": "1.3.1",
   "description": "치지직 파워(통나무) 자동 획득 및 파워 개수 표시",
-  "homepage_url": "https://github.com/choco-lily/chzzk_auto_log_power",
+  "homepage_url": "https://github.com/PCBiS/chzzk-auto-log-power-firefox",
   "content_scripts": [
     {
       "matches": [
