@@ -1,0 +1,11 @@
+{
+  "name": "chzzk-auto-log-power-firefox",
+  "version": "1.3.1",
+  "private": true,
+  "description": "Firefox port of choco-lily/chzzk_auto_log_power",
+  "scripts": {
+    "check": "node --check content.js && node --check popup.js && node --check log.js && node tests/check-port.mjs",
+    "package": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1"
+  },
+  "license": "GPL-3.0-only"
+}

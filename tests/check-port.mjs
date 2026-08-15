@@ -1,0 +1,17 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+
+const manifest = JSON.parse(await readFile("manifest.json", "utf8"));
+const content = await readFile("content.js", "utf8");
+
+assert.equal(manifest.manifest_version, 2);
+assert.equal(manifest.version, "1.3.1");
+assert.ok(manifest.permissions.includes("https://api.chzzk.naver.com/*"));
+assert.ok(manifest.browser_specific_settings?.gecko?.id);
+assert.match(content, /claim\.claimType === "WATCH_1_HOUR"/);
+assert.match(content, /text\.includes\("통나무"\)/);
+assert.match(content, /text\.includes\("1시간"\)/);
+assert.match(content, /hasRecentViewInStorage \|\| hasRecentViewInMemory/);
+assert.doesNotMatch(content, /await chrome\.storage\./);
+
+console.log("Firefox port checks passed.");

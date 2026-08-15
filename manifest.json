@@ -1,0 +1,39 @@
+{
+  "manifest_version": 2,
+  "name": "치지직 통나무 파워 자동 획득 (Firefox)",
+  "version": "1.3.1",
+  "description": "치지직 파워(통나무) 자동 획득 및 파워 개수 표시",
+  "homepage_url": "https://github.com/choco-lily/chzzk_auto_log_power",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chzzk.naver.com/*",
+        "https://m.chzzk.naver.com/*"
+      ],
+      "js": ["content.js"]
+    }
+  ],
+  "browser_action": {
+    "default_popup": "index.html",
+    "default_icon": "icon.png"
+  },
+  "icons": {
+    "128": "icon.png"
+  },
+  "permissions": [
+    "storage",
+    "activeTab",
+    "tabs",
+    "https://api.chzzk.naver.com/*"
+  ],
+  "web_accessible_resources": ["log.html"],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "chzzk-auto-log-power-firefox@github",
+      "data_collection_permissions": {
+        "required": ["none"]
+      },
+      "strict_min_version": "142.0"
+    }
+  }
+}

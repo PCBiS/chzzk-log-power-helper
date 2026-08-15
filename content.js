@@ -1,0 +1,1611 @@
+console.log("[치지직 통나무 파워 자동 획득] 확장 프로그램 실행됨");
+
+// Firefox Manifest V2 exposes Chrome-compatible APIs through callbacks.
+// Wrap the storage methods that the latest Chrome source awaits as Promises.
+function storageGet(area, keys) {
+    return new Promise((resolve, reject) => {
+        chrome.storage[area].get(keys, (result) => {
+            const error = chrome.runtime.lastError;
+            if (error) reject(new Error(error.message));
+            else resolve(result);
+        });
+    });
+}
+
+function storageSet(area, values) {
+    return new Promise((resolve, reject) => {
+        chrome.storage[area].set(values, () => {
+            const error = chrome.runtime.lastError;
+            if (error) reject(new Error(error.message));
+            else resolve();
+        });
+    });
+}
+
+let lastPowerNode = null;
+let isChannelInactive = false; // 비활성화 상태 고정용
+let followPowerCheckTimer = null;
+let popupCreateRetryTimer = null; // 배지 클릭 시 팝업 생성 재시도 타이머
+let popupLayerEscHandler = null; // 팝업 ESC 핸들러 참조 저장
+let badgeToggle = false;
+let clockToggle = false;
+let movingGifProfileToggle = false; // 움직이는 gif 프로필 토글
+let lastViewLogTimestampMs = null; // 최근 view 로그 기록 시각 (메모리)
+let lastClockNode = null; // 시계 UI 노드 참조
+let powerSummaryToggle = false; // 통나무 개수 요약 표시 토글
+
+// gif 프로필 URL에서 type 파라미터의 "_na" 만 제거
+function normalizeGifProfileUrl(url) {
+    if (!url || typeof url !== "string") return url;
+    try {
+        const u = new URL(url, location.href);
+        const type = u.searchParams.get("type");
+        if (!type || !type.endsWith("_na")) return url;
+        u.searchParams.set("type", type.slice(0, -3)); // "_na" 제거
+        return u.toString();
+    } catch (e) {
+        // URL 파싱이 안 되면 단순 치환은 위험하니 그대로 둔다
+        return url;
+    }
+}
+
+// 문서 내 이미지들에 움직이는 gif 프로필 적용
+function applyMovingGifProfileToDocument(root = document) {
+    if (!movingGifProfileToggle || !root) return;
+    try {
+        const imgs = root.querySelectorAll
+            ? root.querySelectorAll("img[src*='gif?type='], img[src*='.gif?type=']")
+            : [];
+        imgs.forEach((img) => {
+            if (!img || !img.src) return;
+            const newSrc = normalizeGifProfileUrl(img.src);
+            if (newSrc && newSrc !== img.src) {
+                img.src = newSrc;
+            }
+        });
+    } catch (_) {}
+}
+
+// DOM 변경 시에도 신규 이미지에 적용
+let movingGifProfileObserver = null;
+function ensureMovingGifProfileObserver() {
+    if (movingGifProfileObserver || typeof MutationObserver === "undefined") return;
+    movingGifProfileObserver = new MutationObserver((mutations) => {
+        if (!movingGifProfileToggle) return;
+        mutations.forEach((m) => {
+            m.addedNodes &&
+                m.addedNodes.forEach((node) => {
+                    if (!(node instanceof HTMLElement)) return;
+                    if (node.tagName === "IMG") {
+                        applyMovingGifProfileToDocument(node.parentElement || document);
+                    } else {
+                        applyMovingGifProfileToDocument(node);
+                    }
+                });
+        });
+    });
+    try {
+        movingGifProfileObserver.observe(document.documentElement, {
+            childList: true,
+            subtree: true,
+        });
+    } catch (_) {}
+}
+
+// 현재 테마가 다크인지 여부 (html 태그에 theme_dark 클래스 존재 여부)
+function isDarkTheme() {
+    try {
+        return document.documentElement.classList.contains("theme_dark");
+    } catch (e) {
+        return true;
+    }
+}
+
+// 통나무 개수 요약 표시 포맷터
+function formatPowerAmount(amount) {
+    if (amount === null || amount === undefined) return "?";
+    if (typeof amount !== "number" || isNaN(amount)) return String(amount);
+    const safeAmount = Math.floor(amount);
+    if (!powerSummaryToggle) return safeAmount.toLocaleString();
+
+    const normalize = (num) =>
+        String(num).replace(/\.?0+$/, ""); // 소수점 불필요한 0 제거
+
+    if (safeAmount >= 10_000_000) {
+        return `${Math.round(safeAmount / 10_000).toLocaleString()}만`;
+    }
+    if (safeAmount >= 1_000_000) {
+        return `${normalize((safeAmount / 10_000).toFixed(1))}만`;
+    }
+    if (safeAmount >= 10_000) {
+        return `${normalize((safeAmount / 10_000).toFixed(2))}만`;
+    }
+    return safeAmount.toLocaleString();
+}
+
+// 채팅 입력 영역 내 뱃지/시계 삽입 위치 탐색
+function findChatToolTarget() {
+    const toolsDivs = Array.from(document.querySelectorAll("div")).filter((div) =>
+        Array.from(div.classList).some((cls) =>
+            cls.startsWith("live_chatting_input_tools__") ||
+            cls === "live_chatting_input_tools" ||
+            cls.includes("_tools_")
+        )
+    );
+    let target = null;
+    let insertMode = "append"; // append | after
+
+    for (const toolsDiv of toolsDivs) {
+        const btns = Array.from(toolsDiv.querySelectorAll("button"));
+        const donationBtns = btns.filter((b) =>
+            Array.from(b.classList).some((cls) =>
+                cls.startsWith("live_chatting_input_donation_button__") ||
+                cls.includes("_donation_button_")
+            )
+        );
+        if (donationBtns.length > 0) {
+            target = donationBtns[donationBtns.length - 1];
+            insertMode = "after";
+            break;
+        } else {
+            const actionDivs = Array.from(toolsDiv.querySelectorAll("div")).filter(
+                (div) =>
+                    Array.from(div.classList).some((cls) =>
+                        cls.startsWith("live_chatting_input_action__") ||
+                        cls.includes("_action_")
+                    )
+            );
+            if (actionDivs.length > 0) {
+                target = actionDivs[actionDivs.length - 1];
+                insertMode = "append";
+                break;
+            }
+        }
+    }
+
+    if (!target) {
+        const donationBtns = Array.from(document.querySelectorAll("button")).filter((b) =>
+            Array.from(b.classList).some((cls) =>
+                cls.startsWith("live_chatting_input_donation_button__") ||
+                cls.includes("_donation_button_")
+            )
+        );
+        if (donationBtns.length > 0) {
+            target = donationBtns[donationBtns.length - 1];
+            insertMode = "after";
+        }
+    }
+
+    if (!target) return null;
+    return { target, insertMode };
+}
+
+// 지정된 위치에 요소 삽입
+function insertBadgeElement(element, info) {
+    if (!info || !info.target) return false;
+    if (info.insertMode === "after" && info.target.parentNode) {
+        info.target.parentNode.insertBefore(element, info.target.nextSibling);
+        return true;
+    }
+    if (info.target.appendChild) {
+        info.target.appendChild(element);
+        return true;
+    }
+    return false;
+}
+
+// 테마별 색상 모음
+function getThemeColors() {
+    const dark = isDarkTheme();
+    return {
+        bg: dark ? "none" : "#fff",
+        fg: dark ? "#fff" : "#000",
+        hoverBg: dark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.08)",
+        popupBg: dark ? "var(--Ref-Color-Neutral-90, #141517)" : "#fff",
+        popupFg: dark ? "#fff" : "#000",
+        border: "1px solid #0008",
+        inactiveIcon: "#888",
+    };
+}
+
+// 채널 정보 가져오기 함수
+async function getChannelInfo(channelId) {
+    try {
+        const response = await fetch(
+            `https://api.chzzk.naver.com/service/v1/channels/${channelId}`
+        );
+        const data = await response.json();
+
+        if (data && data.content) {
+            return {
+                channelId: data.content.channelId,
+                channelName: data.content.channelName,
+                channelImageUrl: data.content.channelImageUrl,
+                verifiedMark: data.content.verifiedMark,
+            };
+        }
+    } catch (error) {
+        console.error(
+            "[치지직 통나무 파워 자동 획득] 채널 정보 가져오기 실패:",
+            error
+        );
+    }
+
+    return {
+        channelId: channelId,
+        channelName: "알 수 없는 채널",
+        channelImageUrl: null,
+        verifiedMark: false,
+    };
+}
+
+// 통나무 획득 로그 저장 함수
+async function savePowerLog(channelId, amount, method, testAmount = null, extra = null) {
+    try {
+        // 채널 정보 가져오기
+        const channelInfo = await getChannelInfo(channelId);
+
+        const logEntry = {
+            timestamp: new Date().toISOString(),
+            channelId: channelInfo.channelId,
+            channelName: channelInfo.channelName,
+            channelImageUrl: channelInfo.channelImageUrl,
+            verifiedMark: channelInfo.verifiedMark,
+            amount: amount,
+            method: method, // 'follow', 'view', 'claimType' 등
+        };
+
+        if (extra && typeof extra === "object") {
+            try {
+                Object.assign(logEntry, extra);
+            } catch (_) {}
+        }
+
+        if (testAmount !== null) {
+            if (method.toUpperCase() == "FOLLOW") {
+                return;
+            }
+            logEntry.channelName =
+                logEntry.channelName +
+                " (테스트) - " +
+                logEntry.method +
+                " - " +
+                testAmount;
+        }
+
+        // 기존 로그 가져오기
+        const result = await storageGet("local", ["powerLogs"]);
+        const logs = result.powerLogs || [];
+
+        // 최대 저장 개수 설정 로드 (기본 10000)
+        let maxLogs = 10000;
+        try {
+            const s = await storageGet("sync", ["maxLogs"]);
+            if (s && typeof s.maxLogs === 'number' && s.maxLogs > 0) maxLogs = Math.floor(s.maxLogs);
+        } catch (_) {}
+
+        // 새 로그 추가 (최대 maxLogs 개까지만 저장)
+        logs.unshift(logEntry);
+        if (logs.length > maxLogs) {
+            logs.splice(maxLogs);
+        }
+
+        // 저장
+        await storageSet("local", { powerLogs: logs });
+        console.log("[치지직 통나무 파워 자동 획득] 로그 저장됨:", logEntry);
+    } catch (error) {
+        console.error("[치지직 통나무 파워 자동 획득] 로그 저장 실패:", error);
+    }
+}
+
+chrome.storage.sync.get(
+    ["badge", "clockToggle", "movingGifProfile", "powerSummary"],
+    (r) => {
+    if (r.badge == undefined) {
+        r.badge = true;
+        chrome.storage.sync.set({ badge: true });
+    }
+    if (r.clockToggle == undefined) {
+        r.clockToggle = false;
+        chrome.storage.sync.set({ clockToggle: false });
+    }
+    if (r.movingGifProfile == undefined) {
+        r.movingGifProfile = false;
+        chrome.storage.sync.set({ movingGifProfile: false });
+    }
+        if (r.powerSummary == undefined) {
+            r.powerSummary = false;
+            chrome.storage.sync.set({ powerSummary: false });
+        }
+    badgeToggle = r.badge;
+    clockToggle = r.clockToggle;
+    movingGifProfileToggle = !!r.movingGifProfile;
+        powerSummaryToggle = !!r.powerSummary;
+    if (movingGifProfileToggle) {
+        applyMovingGifProfileToDocument();
+    }
+    ensureMovingGifProfileObserver();
+    }
+);
+
+// popup에서 오는 메시지 리스너
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === "updateBadgeToggle") {
+        badgeToggle = request.badgeToggle;
+        // 즉시 뱃지 상태 업데이트
+        if (lastPowerNode && lastPowerNode.parentNode) {
+            lastPowerNode.style.display = badgeToggle ? "inline-flex" : "none";
+        } else if (badgeToggle) {
+            // 뱃지가 없고 badgeToggle이 true인 경우 생성
+            updatePowerCountBadge();
+        }
+    } else if (request.action === "updateClockToggle") {
+        clockToggle = request.clockToggle;
+        // 즉시 시계 상태 업데이트
+        if (lastClockNode && lastClockNode.parentNode) {
+            lastClockNode.style.display = clockToggle ? "inline-flex" : "none";
+        } else if (clockToggle) {
+            // 시계가 없고 clockToggle이 true인 경우 생성
+            updateClockDisplay();
+        }
+    } else if (request.action === "updateMovingGifProfileToggle") {
+        movingGifProfileToggle = !!request.movingGifProfileToggle;
+        if (movingGifProfileToggle) {
+            applyMovingGifProfileToDocument();
+        }
+    } else if (request.action === "updatePowerSummaryToggle") {
+        powerSummaryToggle = !!request.powerSummaryToggle;
+        // 즉시 뱃지/시계에 반영
+        updatePowerCountBadge();
+        updateClockDisplay();
+    } else if (request.action === 'fetchPredictionDetail') {
+        (async () => {
+            try {
+                const { channelId, predictionId } = request;
+                if (!channelId || !predictionId) return sendResponse({ ok: false, error: 'missing params' });
+                const url = `https://api.chzzk.naver.com/service/v1/channels/${channelId}/log-power/predictions/${predictionId}?fields=participation`;
+                const res = await fetch(url, { credentials: 'include' });
+                if (!res.ok) return sendResponse({ ok: false, status: res.status });
+                const json = await res.json();
+                sendResponse({ ok: true, data: json });
+            } catch (e) {
+                sendResponse({ ok: false, error: String(e) });
+            }
+        })();
+        return true; // async
+    }
+});
+
+(function alwaysActive() {
+    // document 속성 오버라이드
+    try {
+        Object.defineProperty(document, "hidden", {
+            get: () => false,
+            configurable: true,
+        });
+    } catch (e) {}
+    try {
+        Object.defineProperty(document, "visibilityState", {
+            get: () => "visible",
+            configurable: true,
+        });
+    } catch (e) {}
+    try {
+        Object.defineProperty(document, "webkitVisibilityState", {
+            get: () => "visible",
+            configurable: true,
+        });
+    } catch (e) {}
+    try {
+        document.hasFocus = () => true;
+    } catch (e) {}
+    // 이벤트 리스너 무시
+    const blockedEvents = [
+        "visibilitychange",
+        "blur",
+        "webkitvisibilitychange",
+    ];
+    const origAddEventListener = EventTarget.prototype.addEventListener;
+    EventTarget.prototype.addEventListener = function (
+        type,
+        listener,
+        options
+    ) {
+        if (blockedEvents.includes(type)) return;
+        return origAddEventListener.call(this, type, listener, options);
+    };
+    // 즉시 한 번 visibilitychange 이벤트 발생시켜서 반영
+    try {
+        document.dispatchEvent(new Event("visibilitychange"));
+    } catch (e) {}
+})();
+
+// PerformanceObserver 기반 네트워크 감지
+(function observeNetworkByPerformance() {
+    const followRe = /\/service\/v1\/channels\/[\w-]+\/follow(?:[\/?#].*)?$/; // 쿼리/슬래시 허용
+    function handleUrl(url) {
+        if (!url) return;
+        if (!followRe.test(url)) return;
+        console.log("[치지직 통나무 파워 자동 획득] 감지: follow", url);
+        if (!followPowerCheckTimer) {
+            let tryCount = 0;
+            followPowerCheckTimer = setInterval(async () => {
+                tryCount++;
+                const channelId = getChannelIdFromUrl();
+                if (!channelId) return;
+                let amount = null;
+                let claims = [];
+                try {
+                    const res = await fetch(
+                        `https://api.chzzk.naver.com/service/v1/channels/${channelId}/log-power`,
+                        { credentials: "include" }
+                    );
+                    const data = await res.json();
+                    if (data && data.content) {
+                        if (typeof data.content.amount === "number")
+                            amount = data.content.amount;
+                        if (Array.isArray(data.content.claims))
+                            claims = data.content.claims;
+                    }
+                } catch (e) {}
+                if (claims && claims.length > 0) {
+                    console.log(
+                        "[치지직 통나무 파워 자동 획득] claims:",
+                        claims
+                    );
+                    await Promise.all(
+                        claims.map(async (claim) => {
+                            if (claim.claimType === "WATCH_1_HOUR") return; // WATCH_1_HOUR는 백그라운드 API 호출로 획득하지 않고 화면 버튼 클릭으로만 획득
+                            const claimId = claim.claimId;
+                            const putUrl = `https://api.chzzk.naver.com/service/v1/channels/${channelId}/log-power/claims/${claimId}`;
+                            try {
+                                await fetch(putUrl, {
+                                    method: "PUT",
+                                    credentials: "include",
+                                });
+                            } catch (e) {}
+                            // 로그 저장
+                            if (claim.claimType != "WATCH_1_HOUR") {
+                                // 로그 저장
+                                savePowerLog(
+                                    channelId,
+                                    claim.amount,
+                                    claim.claimType
+                                );
+                            }
+                        })
+                    );
+                    for (let i = 0; i < 10; i++) {
+                        try {
+                            const res2 = await fetch(
+                                `https://api.chzzk.naver.com/service/v1/channels/${channelId}/log-power`,
+                                { credentials: "include" }
+                            );
+                            const data2 = await res2.json();
+                            if (
+                                data2 &&
+                                data2.content &&
+                                typeof data2.content.amount === "number"
+                            ) {
+                                amount = data2.content.amount;
+                                if (amount > 0) break;
+                            }
+                        } catch (e) {}
+                        await new Promise((r) => setTimeout(r, 1000));
+                    }
+                    clearInterval(followPowerCheckTimer);
+                    followPowerCheckTimer = null;
+                    fetchAndUpdatePowerAmount();
+                } else if (amount !== null && amount >= 300) {
+                    clearInterval(followPowerCheckTimer);
+                    followPowerCheckTimer = null;
+                    fetchAndUpdatePowerAmount();
+                }
+            }, 5000);
+        }
+    }
+    try {
+        const po = new PerformanceObserver((list) => {
+            for (const entry of list.getEntries()) {
+                handleUrl(entry.name);
+            }
+        });
+        po.observe({ type: "resource", buffered: true });
+        performance
+            .getEntriesByType("resource")
+            .forEach((e) => handleUrl(e.name));
+    } catch (e) {
+        setInterval(() => {
+            try {
+                performance
+                    .getEntriesByType("resource")
+                    .forEach((e) => handleUrl(e.name));
+            } catch (_) {}
+        }, 1000);
+    }
+})();
+
+// 스트리머 해시코드 추출
+function getChannelIdFromUrl() {
+    const match = window.location.pathname.match(/\/live\/([\w-]+)/);
+    return match ? match[1] : null;
+}
+
+// log-power API에서 파워 개수 받아오기 및 갱신
+let cachedPowerAmount = null;
+async function fetchAndUpdatePowerAmount() {
+    if (!isLivePage()) return;
+    const channelId = getChannelIdFromUrl();
+    if (!channelId) return;
+    let amount = null;
+    let claims = [];
+    let now = new Date();
+    let active = true;
+    try {
+        const res = await fetch(
+            `https://api.chzzk.naver.com/service/v1/channels/${channelId}/log-power`,
+            { credentials: "include" }
+        );
+        const data = await res.json();
+        if (data && data.content) {
+            if (typeof data.content.amount === "number") {
+                amount = data.content.amount;
+            }
+            if (Array.isArray(data.content.claims)) {
+                claims = data.content.claims;
+            }
+            if (typeof data.content.active === "boolean") {
+                active = data.content.active;
+            }
+        }
+    } catch (e) {
+        amount = null;
+        claims = [];
+        active = true;
+    }
+    if (active === false) {
+        isChannelInactive = true; // 비활성화 상태 고정
+        if (claims.length > 0) {
+            console.log("[치지직 통나무 파워 자동 획득] claims:", claims);
+            await Promise.all(
+                claims.map(async (claim) => {
+                    if (claim.claimType === "WATCH_1_HOUR") return; // WATCH_1_HOUR는 백그라운드 API 호출로 획득하지 않고 화면 버튼 클릭으로만 획득
+                    const claimId = claim.claimId;
+                    const claimType = claim.claimType;
+                    const putUrl = `https://api.chzzk.naver.com/service/v1/channels/${channelId}/log-power/claims/${claimId}`;
+                    try {
+                        const putRes = await fetch(putUrl, {
+                            method: "PUT",
+                            credentials: "include",
+                        });
+                        const putJson = await putRes.json();
+                        const amountText =
+                            putJson.content &&
+                            typeof putJson.content.amount === "number"
+                                ? putJson.content.amount
+                                : "?";
+                        console.log(
+                            `[치지직 통나무 파워 자동 획득] ${claimType}으로 ${amountText}개 획득`
+                        );
+                        if (claimType == "WATCH_1_HOUR") {
+                            // 로그 저장
+                            savePowerLog(channelId, 100, claimType);
+                        }
+                        else if (claimType == "FOLLOW") {
+                            savePowerLog(channelId, 300, "FOLLOW");
+                        } else {
+                            savePowerLog(channelId, 0, claimType, amountText);
+                        }
+                    } catch (e) {
+                        console.log(
+                            "[치지직 통나무 파워 자동 획득] PUT 요청 에러:",
+                            e
+                        );
+                    }
+                })
+            );
+            setTimeout(() => {
+                fetchAndUpdatePowerAmount();
+            }, 1000);
+        } else {
+            console.log("[치지직 통나무 파워 자동 획득] 비활성화 된 채널");
+        }
+        cachedPowerAmount = amount;
+        // 4초간 badge 표시 반복 갱신
+        let inactiveBadgeTries = 0;
+        const inactiveBadgeTimer = setInterval(() => {
+            updatePowerCountBadge(amount, true);
+            inactiveBadgeTries++;
+            if (inactiveBadgeTries > 4) {
+                clearInterval(inactiveBadgeTimer);
+            }
+        }, 1000);
+        if (typeof powerBadgeDomPoller !== "undefined" && powerBadgeDomPoller)
+            clearInterval(powerBadgeDomPoller);
+        if (typeof powerCountInterval !== "undefined" && powerCountInterval)
+            clearInterval(powerCountInterval);
+        return;
+    }
+    isChannelInactive = false; // 활성화 상태로 복귀 시 해제
+    cachedPowerAmount = amount;
+    updatePowerCountBadge(amount, false);
+    if (claims.length > 0) {
+        console.log("[치지직 통나무 파워 자동 획득] claims:", claims);
+        await Promise.all(
+            claims.map(async (claim) => {
+                if (claim.claimType === "WATCH_1_HOUR") return; // WATCH_1_HOUR는 백그라운드 API 호출로 획득하지 않고 화면 버튼 클릭으로만 획득
+                const claimId = claim.claimId;
+                const claimType = claim.claimType;
+                const putUrl = `https://api.chzzk.naver.com/service/v1/channels/${channelId}/log-power/claims/${claimId}`;
+                try {
+                    const putRes = await fetch(putUrl, {
+                        method: "PUT",
+                        credentials: "include",
+                    });
+                    const putJson = await putRes.json();
+                    const amountText =
+                        putJson.content &&
+                        typeof putJson.content.amount === "number"
+                            ? putJson.content.amount
+                            : "?";
+                    console.log(
+                        `[치지직 통나무 파워 자동 획득] ${claimType}으로 ${amountText}개 획득`
+                    );
+
+                    if (claimType != "WATCH_1_HOUR") {
+                        // 로그 저장
+                        savePowerLog(channelId, 0, claimType, amountText);
+                    }
+                } catch (e) {
+                    console.log(
+                        "[치지직 통나무 파워 자동 획득] PUT 요청 에러:",
+                        e
+                    );
+                }
+            })
+        );
+        // claims 획득 후 파워 표시 즉시 갱신
+        setTimeout(() => {
+            fetchAndUpdatePowerAmount();
+        }, 1000);
+    }
+}
+
+// 스타일 삽입 (최초 1회)
+(function injectTooltipStyle() {
+    if (document.getElementById("chzzk_power_inactive_tooltip_style")) return;
+    const style = document.createElement("style");
+    style.id = "chzzk_power_inactive_tooltip_style";
+    style.textContent = `
+    .log_disabled_tooltip {
+      align-items: center;
+      background-color: var(--color-bg-04, #2e3033);
+      border: 1px solid #0008;
+      border-radius: 6px;
+      bottom: 0;
+      box-shadow: 1px 1px 3px #0008;
+      color: var(--color-content-02, #dfe2ea);
+      display: none;
+      font-size: 12px;
+      font-weight: 400;
+      justify-content: center;
+      line-height: 1.5;
+      padding: 5px 9px;
+      pointer-events: none;
+      position: absolute;
+      right: 30px;
+      text-align: left;
+      white-space: nowrap;
+      z-index: 1000;
+    }
+    .chzzk_power_inactive_btn:hover .log_disabled_tooltip {
+      display: inline-flex;
+    }
+  `;
+    document.head.appendChild(style);
+})();
+
+// 파워 개수 표시/갱신 (isInactive: true면 불투명도 50% 및 안내)
+function updatePowerCountBadge(amount = cachedPowerAmount, isInactive = false) {
+    if (!isLivePage()) return;
+    // 비활성화 상태 고정 시 무조건 비활성화 뱃지
+    if (isChannelInactive) isInactive = true;
+    // badgeToggle 값 확인 후 항상 새로 생성
+    chrome.storage.sync.get("badge", (r) => {
+        if (r.badge == undefined) {
+            r.badge = true;
+            chrome.storage.sync.set({ badge: true });
+        }
+        badgeToggle = r.badge;
+
+        // 기존 뱃지 제거 (백업본처럼 항상 새로 생성)
+        if (lastPowerNode && lastPowerNode.parentNode) {
+            lastPowerNode.parentNode.removeChild(lastPowerNode);
+            lastPowerNode = null;
+        }
+
+        // 토글이 꺼져 있으면 생성하지 않음
+        if (!badgeToggle) return;
+
+        // 새 뱃지 생성
+        createPowerBadge(amount, isInactive);
+    });
+}
+
+// 뱃지 생성 함수
+function createPowerBadge(amount, isInactive) {
+    const targetInfo = findChatToolTarget();
+    if (!targetInfo) return;
+
+    // 파워 개수 표시 생성 및 삽입
+    const badge = document.createElement("button");
+    badge.type = "button";
+    badge.setAttribute("tabindex", "-1");
+    badge.style.display = "inline-flex";
+    badge.style.alignItems = "center";
+    badge.style.justifyContent = "center";
+    badge.style.height = "24px";
+    badge.style.minWidth = "24px";
+    const colors = getThemeColors();
+    badge.style.background = colors.bg;
+    badge.style.border = "none";
+    badge.style.padding = "0 2px";
+    badge.style.marginLeft = "0px";
+    badge.style.fontFamily = "inherit";
+    badge.style.fontWeight = "bold";
+    badge.style.fontSize = "11px";
+    badge.style.color = colors.fg;
+    badge.style.cursor = "pointer";
+    badge.addEventListener("mouseenter", () => {
+        badge.style.cursor = "pointer";
+        badge.style.background = colors.hoverBg;
+    });
+    badge.addEventListener("mouseleave", () => {
+        badge.style.cursor = "pointer";
+        badge.style.background = colors.bg;
+    });
+    badge.innerHTML = `${POWER_ICON_SVG}<span style="margin-left:4px;vertical-align:middle;">${formatPowerAmount(
+        amount
+    )}<\/span>`;
+    badge.classList.add("chzzk_power_badge");
+    // 라이트 모드에서 아이콘 색상은 텍스트 색상과 동기화
+    const svg = badge.querySelector("svg");
+    if (svg) {
+        svg.style.color = colors.fg;
+        svg.setAttribute("fill", "currentColor");
+    }
+
+    // 비활성화 상태 설정
+    updateBadgeInactiveState(badge, isInactive);
+
+    badge.onclick = function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        // 뱃지 클릭 시 즉시 파워 개수 갱신
+        fetchAndUpdatePowerAmount();
+        const existPopup = document.querySelector(".chzzk_power_popup_layer") || 
+                           Array.from(document.querySelectorAll("div")).find(d => 
+                               Array.from(d.classList).some(cls => 
+                                   cls.startsWith("live_chatting_popup_donation_layer__") ||
+                                   cls.includes("_donation_layer_")
+                               )
+                           );
+        if (existPopup) {
+            existPopup.parentNode &&
+                existPopup.parentNode.removeChild(existPopup);
+            if (popupLayerEscHandler) {
+                window.removeEventListener("keydown", popupLayerEscHandler);
+                popupLayerEscHandler = null;
+            }
+            if (popupCreateRetryTimer) {
+                clearTimeout(popupCreateRetryTimer);
+                popupCreateRetryTimer = null;
+            }
+            return;
+        }
+
+        // 재시도 기반 팝업 생성
+        if (popupCreateRetryTimer) {
+            clearTimeout(popupCreateRetryTimer);
+            popupCreateRetryTimer = null;
+        }
+        (function tryCreatePopup() {
+            // 채팅 리스트 wrapper 찾기 (없으면 생길 때까지 재시도)
+            const chatWrapper = document.querySelector('div[class^="live_chatting_list_wrapper"]') ||
+                                document.querySelector('div[role="log"]') ||
+                                document.querySelector('div[class*="_container_sg7hy_"]');
+            if (!chatWrapper) {
+                popupCreateRetryTimer = setTimeout(tryCreatePopup, 1000);
+                return;
+            }
+
+            // 팝업 레이어 (채팅 리스트 전체 덮음, 반응형)
+            const popupLayer = document.createElement("div");
+            popupLayer.className = "chzzk_power_popup_layer";
+            popupLayer.setAttribute("role", "dialog");
+            popupLayer.style.position = "absolute";
+            popupLayer.style.left = "0";
+            popupLayer.style.top = "0";
+            popupLayer.style.width = "100%";
+            popupLayer.style.height = "100%";
+            popupLayer.style.display = "flex";
+            popupLayer.style.alignItems = "center";
+            popupLayer.style.justifyContent = "center";
+            popupLayer.style.zIndex = "20001";
+            popupLayer.style.background = "none";
+            popupLayer.style.pointerEvents = "none";
+
+            // 팝업 컨테이너 (반응형, 내용 없음)
+            const popupContainer = document.createElement("div");
+            popupContainer.className = "chzzk_power_popup_container";
+            popupContainer.setAttribute("role", "alertdialog");
+            popupContainer.setAttribute("aria-modal", "true");
+            popupContainer.style.width = "94%";
+            popupContainer.style.maxWidth = "490px";
+            popupContainer.style.height = "auto";
+            popupContainer.style.minHeight = "150px";
+            popupContainer.style.borderRadius = "12px";
+            popupContainer.style.boxSizing = "border-box";
+            popupContainer.style.pointerEvents = "auto";
+            popupContainer.style.display = "flex";
+            popupContainer.style.flexDirection = "column";
+            popupContainer.style.alignItems = "center";
+            popupContainer.style.justifyContent = "center";
+            popupContainer.style.maxHeight = "100%";
+            popupContainer.style.overflow = "visible";
+            const colors2 = getThemeColors();
+            popupContainer.style.background = colors2.popupBg;
+            popupContainer.style.color = colors2.popupFg;
+            popupContainer.style.border = "1px solid #0008";
+            popupContainer.innerHTML = "";
+
+            // 닫기(X) 버튼
+            const action = document.createElement("div");
+            action.className = "chzzk_power_popup_action";
+            action.style.alignSelf = "stretch";
+            action.style.display = "flex";
+            action.style.justifyContent = "flex-end";
+            action.style.width = "100%";
+            action.style.padding = "8px";
+            const closeBtn = document.createElement("button");
+            closeBtn.className = "chzzk_power_popup_close_button";
+            closeBtn.setAttribute("type", "button");
+            closeBtn.setAttribute("aria-label", "팝업 닫기");
+            closeBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20" fill="none"><path fill="currentColor" d="M16.6 4.933A1.083 1.083 0 1 0 15.066 3.4L10 8.468 4.933 3.4A1.083 1.083 0 0 0 3.4 4.933L8.468 10 3.4 15.067A1.083 1.083 0 1 0 4.933 16.6L10 11.532l5.067 5.067a1.083 1.083 0 1 0 1.532-1.532L11.532 10l5.067-5.067Z"/></svg>`;
+            closeBtn.style.background = "none";
+            closeBtn.style.border = "none";
+            closeBtn.style.color = colors2.popupFg;
+            closeBtn.style.width = "32px";
+            closeBtn.style.height = "32px";
+            closeBtn.style.display = "inline-flex";
+            closeBtn.style.alignItems = "center";
+            closeBtn.style.justifyContent = "center";
+            closeBtn.style.borderRadius = "8px";
+            closeBtn.style.cursor = "pointer";
+            closeBtn.addEventListener("mouseenter", () => {
+                closeBtn.style.background = colors2.hoverBg;
+            });
+            closeBtn.addEventListener("mouseleave", () => {
+                closeBtn.style.background = colors2.bg;
+            });
+
+            // 로딩 표시
+            const loading = document.createElement("div");
+            loading.style.padding = "32px 0";
+            loading.style.fontSize = "18px";
+            loading.style.color = colors2.popupFg;
+            loading.textContent = "불러오는 중...";
+
+            closeBtn.onclick = removePopup;
+            action.appendChild(closeBtn);
+            popupContainer.appendChild(action);
+            popupContainer.appendChild(loading);
+
+            popupLayer.appendChild(popupContainer);
+            chatWrapper.appendChild(popupLayer);
+
+            // ESC로 닫기
+            function removePopup() {
+                if (popupLayer.parentNode)
+                    popupLayer.parentNode.removeChild(popupLayer);
+                if (popupLayerEscHandler) {
+                    window.removeEventListener("keydown", popupLayerEscHandler);
+                    popupLayerEscHandler = null;
+                }
+            }
+            popupLayerEscHandler = function (ev) {
+                if (ev.key === "Escape") removePopup();
+            };
+            window.addEventListener("keydown", popupLayerEscHandler);
+
+            // API 요청
+            fetch("https://api.chzzk.naver.com/service/v1/log-power/balances", {
+                credentials: "include",
+            })
+                .then((res) => res.json())
+                .then((data) => {
+                    loading.remove();
+                    const arr =
+                        data && data.content && data.content.data
+                            ? data.content.data
+                            : [];
+                    // 100 이상만, amount 내림차순 정렬
+                    const filtered = arr
+                        .filter((x) => x.amount >= 100)
+                        .sort((a, b) => b.amount - a.amount);
+                    // HTML 테이블 생성
+                    const table = document.createElement("div");
+                    table.style.width = "100%";
+                    table.style.overflowY = "auto";
+                    table.style.maxHeight = "400px";
+                    table.style.display = "block";
+                    const defaultImg =
+                        "https://ssl.pstatic.net/cmstatic/nng/img/img_anonymous_square_gray_opacity2x.png?type=f120_120_na";
+                    const totalPower = filtered.reduce(
+                        (sum, x) => sum + x.amount,
+                        0
+                    );
+                    table.innerHTML = `
+            <div style="font-weight:bold;font-size:19px;margin-bottom:4px;">누적 파워: ${totalPower.toLocaleString()}</div>
+            <div style="font-weight:bold;font-size:17px;margin-bottom:8px;">채널별 통나무 파워</div>
+            <div style="color:#aaa;font-size:12px;margin-bottom:16px;">100 파워 이상 보유한 채널만 표시합니다.<br>비활성화 된 채널은 회색으로 표시됩니다.</div>
+            <div style="display:flex;flex-direction:column;gap:10px;">
+              ${filtered
+                  .map(
+                      (x, i) => `
+                <div style=\"display:flex;align-items:center;justify-content:space-between;padding:4px 0;\">
+                  <div style=\"display:flex;align-items:center;gap:12px;min-width:0;\">
+                    <span style=\"font-weight:bold;width:24px;text-align:right;color:${
+                        x.active ? "#2a6aff" : "#666"
+                    };font-size:17px;\">${i + 1}</span>
+                    <img src=\"${
+                        x.channelImageUrl ? x.channelImageUrl : defaultImg
+                    }\" alt=\"\" style=\"width:36px;height:36px;border-radius:50%;object-fit:cover;background:#222;opacity:${
+                          x.active ? "1" : "0.5"
+                      };\">
+                    <span style=\"font-weight:bold;font-size:15px;white-space:normal;word-break:break-all;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;color:${
+                        x.active ? "inherit" : "#666"
+                    };\">${x.channelName}${
+                          x.verifiedMark
+                              ? ` <img src='https://ssl.pstatic.net/static/nng/glive/image/icon_official_mark.png' alt='인증' style='width:16px;height:16px;vertical-align:middle;margin-left:2px;'>`
+                              : ""
+                      }</span>
+                  </div>
+                  <span style=\"font-weight:bold;font-size:17px;letter-spacing:1px;color:${
+                      x.active ? "inherit" : "#666"
+                  };\">${Number(x.amount || 0).toLocaleString()}</span>
+                </div>
+              `
+                  )
+                  .join("")}
+            </div>
+          `;
+                    popupContainer.appendChild(table);
+                })
+                .catch((err) => {
+                    loading.remove();
+                    const errDiv = document.createElement("div");
+                    errDiv.style.color = "#f66";
+                    errDiv.style.fontSize = "16px";
+                    errDiv.style.padding = "32px 0";
+                    errDiv.textContent = "API 요청 실패: " + err;
+                    popupContainer.appendChild(errDiv);
+                });
+
+            // 성공적으로 생성되었으므로 재시도 타이머 해제
+            if (popupCreateRetryTimer) {
+                clearTimeout(popupCreateRetryTimer);
+                popupCreateRetryTimer = null;
+            }
+        })();
+    };
+
+    if (insertBadgeElement(badge, targetInfo)) {
+        lastPowerNode = badge;
+    }
+}
+
+// 뱃지 비활성화 상태 업데이트 함수
+function updateBadgeInactiveState(badge, isInactive) {
+    if (isInactive) {
+        badge.classList.add("chzzk_power_inactive_btn");
+        // 아이콘 색상만 회색으로 변경 (fill까지)
+        const svg = badge.querySelector("svg");
+        if (svg) {
+            svg.style.color = "#888";
+            svg.setAttribute("fill", "#888");
+        }
+        // 안내 텍스트 div가 없으면 생성
+        if (!badge.querySelector(".log_disabled_tooltip")) {
+            const tooltip = document.createElement("div");
+            tooltip.textContent = "통나무가 비활성화 된 채널입니다.";
+            tooltip.className = "log_disabled_tooltip";
+            // 라이트 모드에서 툴팁 색상도 흰 배경/검은 글자로 보정
+            const colors = getThemeColors();
+            tooltip.style.backgroundColor =
+                colors.bg === "none" ? "#2e3033" : "#fff";
+            tooltip.style.color = colors.fg;
+            tooltip.style.border = "1px solid #0008";
+            badge.appendChild(tooltip);
+        }
+    } else {
+        badge.classList.remove("chzzk_power_inactive_btn");
+        // 아이콘 색상을 원래대로 복원
+        const svg = badge.querySelector("svg");
+        if (svg) {
+            const colors = getThemeColors();
+            svg.style.color = colors.fg; // currentColor에 맞춤
+            svg.setAttribute("fill", "currentColor");
+        }
+        // 안내 텍스트 div 제거
+        const tooltip = badge.querySelector(".log_disabled_tooltip");
+        if (tooltip) {
+            tooltip.remove();
+        }
+    }
+}
+
+// 1초마다 표시 유지 및 버튼 자동 클릭
+let powerBadgeDomPoller = null;
+function startPowerBadgeDomPoller() {
+    if (!isLivePage()) return;
+    if (powerBadgeDomPoller) clearInterval(powerBadgeDomPoller);
+    powerBadgeDomPoller = setInterval(() => {
+        updatePowerCountBadge();
+        updateClockDisplay();
+        clickPowerButtonIfExists();
+    }, 1000);
+}
+
+// 30초 마다 파워 개수 갱신
+let powerCountInterval = null;
+function startPowerCountUpdater() {
+    if (!isLivePage()) return;
+    fetchAndUpdatePowerAmount();
+    if (powerCountInterval) clearInterval(powerCountInterval);
+    powerCountInterval = setInterval(fetchAndUpdatePowerAmount, 30000);
+    startPowerBadgeDomPoller();
+}
+
+document.addEventListener("DOMContentLoaded", startPowerCountUpdater);
+setTimeout(startPowerCountUpdater, 2000);
+
+function isLivePage() {
+    return location.href.includes("/live");
+}
+
+// 1초마다 url 변경 감지 및 갱신 (chzzk.naver.com 전체에서 동작)
+let prevUrl = location.href;
+setInterval(() => {
+    const currUrl = location.href;
+    if (prevUrl !== currUrl) {
+        prevUrl = currUrl;
+        isChannelInactive = false; // URL 바뀌면 비활성화 상태 해제
+        console.log(
+            "[치지직 통나무 파워 자동 획득] 감지: URL 변경(탭별), 전체 재시작"
+        );
+        if (isLivePage()) {
+            startPowerCountUpdater();
+            // 비활성화 채널이어도 URL 바뀐 직후 1회는 무조건 파워 표시
+            setTimeout(() => {
+                updatePowerCountBadge();
+            }, 1000);
+        }
+    }
+}, 1000);
+
+// 파워 개수 표시용 SVG 아이콘
+const POWER_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 16 16" fill="none"><mask id="mask0_1071_43807" width="16" height="16" x="0" y="0" maskUnits="userSpaceOnUse" style="mask-type: alpha;"><path fill="currentColor" d="M6.795 2.434a.9.9 0 0 1 .74.388l.064.109 1.318 2.635H5.983l-.157-.313-.758-1.517a.9.9 0 0 1 .805-1.302h.922Z"></path><path fill="currentColor" fill-rule="evenodd" d="M12.148 4.434c.857 0 1.508.628 1.912 1.369.415.761.655 1.775.655 2.864 0 1.088-.24 2.102-.655 2.864-.404.74-1.055 1.369-1.912 1.369H4c-.857 0-1.508-.63-1.911-1.37-.416-.761-.655-1.775-.655-2.863 0-1.089.239-2.103.655-2.864.403-.74 1.054-1.37 1.911-1.37h8.148ZM4 5.566c-.248 0-.597.192-.917.779-.308.565-.517 1.385-.517 2.322 0 .936.209 1.756.517 2.321.32.587.67.779.917.779.248 0 .597-.192.917-.779.308-.565.517-1.385.517-2.321 0-.937-.209-1.757-.517-2.322-.32-.587-.67-.779-.917-.779Zm2.526 3.868a6.433 6.433 0 0 1-.222 1.132h5.363l.058-.002a.567.567 0 0 0 0-1.128l-.058-.002H6.526ZM6.284 6.7c.109.353.188.733.234 1.132h.815l.058-.002a.567.567 0 0 0 0-1.128l-.058-.002h-1.05Zm3.316 0a.567.567 0 1 0 0 1.132h3.923a4.83 4.83 0 0 0-.293-1.132H9.6Z" clip-rule="evenodd"></path><path fill="currentColor" d="M5.434 8.667c0-.937-.209-1.757-.517-2.322-.32-.587-.67-.779-.917-.779-.248 0-.597.192-.917.779-.308.565-.517 1.385-.517 2.322 0 .936.209 1.756.517 2.321.32.587.67.779.917.779.248 0 .597-.192.917-.779.308-.565.517-1.385.517-2.321Zm1.132 0c0 1.088-.239 2.102-.655 2.864C5.508 12.27 4.857 12.9 4 12.9s-1.508-.63-1.911-1.37c-.416-.761-.655-1.775-.655-2.863 0-1.089.239-2.103.655-2.864.403-.74 1.054-1.37 1.911-1.37s1.508.63 1.911 1.37c.416.761.655 1.775.655 2.864Z"></path><path fill="currentColor" d="M4.667 8.667C4.667 9.403 4.368 10 4 10c-.368 0-.667-.597-.667-1.333 0-.737.299-1.334.667-1.334.368 0 .667.597.667 1.334Z"></path></mask><g mask="url(#mask0_1071_43807)"><path fill="currentColor" d="M0 0h16v16H0z"></path></g></svg>`;
+
+// 시계 아이콘 SVG
+const CLOCK_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 16 16" fill="none"><path fill="currentColor" d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM8 2.5a5.5 5.5 0 1 1 0 11 5.5 5.5 0 0 1 0-11ZM8.5 5a.5.5 0 0 0-1 0v3a.5.5 0 0 0 .5.5h2a.5.5 0 0 0 0-1H8.5V5Z"/></svg>`;
+
+// 다음 파워 획득 시간 계산 (content script용)
+function calculateNextPowerTimeForClock() {
+    return new Promise((resolve) => {
+        chrome.storage.local.get(['powerLogs'], (result) => {
+            const logs = result.powerLogs || [];
+            const now = new Date();
+            
+            // view 타입 로그만 기준으로 계산
+            const nextPowerTime = calculateFromLastLogForClock(logs, now);
+            
+            resolve(nextPowerTime);
+        });
+    });
+}
+
+// 마지막 로그 기준으로 다음 획득 시간 계산 (content script용)
+function calculateFromLastLogForClock(logs, now) {
+    // view 타입 로그만 필터링
+    const viewLogs = logs.filter(log => log.method === 'view');
+    
+    if (viewLogs.length === 0) {
+        // view 타입 로그가 없으면 현재 시간부터 1시간 후
+        return new Date(now.getTime() + 60 * 60 * 1000);
+    }
+    
+    // 가장 최근 view 타입 로그 찾기
+    const lastLog = viewLogs[0];
+    const lastLogTime = new Date(lastLog.timestamp);
+    
+    // 현재 시간의 분을 마지막 로그의 분으로 설정
+    const nextTime = new Date(now);
+    nextTime.setMinutes(lastLogTime.getMinutes());
+    nextTime.setSeconds(0);
+    nextTime.setMilliseconds(0);
+    
+    // 현재 시간보다 이전이면 다음 시간으로 설정
+    if (nextTime <= now) {
+        nextTime.setHours(nextTime.getHours() + 1);
+    }
+    
+    return nextTime;
+}
+
+// 시계 표시 업데이트
+async function updateClockDisplay() {
+    if (!isLivePage() || !clockToggle) return;
+    
+    try {
+        const nextPowerTime = await calculateNextPowerTimeForClock();
+        const now = new Date();
+        const diffMs = nextPowerTime.getTime() - now.getTime();
+        
+        let timeText;
+        if (diffMs <= 0) {
+            timeText = '곧';
+        } else {
+            const diffMinutes = Math.floor(diffMs / (1000 * 60));
+            const hours = Math.floor(diffMinutes / 60);
+            const minutes = diffMinutes % 60;
+            
+            if (hours > 0) {
+                timeText = `${hours}:${minutes.toString().padStart(2, '0')}`;
+            } else {
+                timeText = `${minutes}분`;
+            }
+        }
+        
+        createClockBadge(timeText);
+    } catch (error) {
+        console.error('시계 표시 업데이트 실패:', error);
+    }
+}
+
+// 시계 뱃지 생성 함수
+function createClockBadge(timeText) {
+    // 기존 시계 뱃지 제거
+    if (lastClockNode && lastClockNode.parentNode) {
+        lastClockNode.parentNode.removeChild(lastClockNode);
+        lastClockNode = null;
+    }
+
+    // 파워 뱃지가 있는지 확인하고 그 오른쪽에 시계 배치
+    const powerBadge = document.querySelector(".chzzk_power_badge");
+    const targetInfo = findChatToolTarget();
+    if (!powerBadge && !targetInfo) return;
+
+    // 시계 표시 생성 및 삽입
+    const clockBadge = document.createElement("button");
+    clockBadge.type = "button";
+    clockBadge.setAttribute("tabindex", "-1");
+    clockBadge.style.display = clockToggle ? "inline-flex" : "none";
+    clockBadge.style.alignItems = "center";
+    clockBadge.style.justifyContent = "center";
+    clockBadge.style.height = "24px";
+    clockBadge.style.minWidth = "24px";
+    const colors = getThemeColors();
+    clockBadge.style.background = colors.bg;
+    clockBadge.style.border = "none";
+    clockBadge.style.padding = "0 2px";
+    clockBadge.style.marginLeft = "2px"; // 파워 뱃지와 약간의 간격
+    clockBadge.style.fontFamily = "inherit";
+    clockBadge.style.fontWeight = "bold";
+    clockBadge.style.fontSize = "11px";
+    clockBadge.style.color = colors.fg;
+    clockBadge.style.cursor = "pointer";
+    clockBadge.addEventListener("mouseenter", () => {
+        clockBadge.style.cursor = "pointer";
+        clockBadge.style.background = colors.hoverBg;
+    });
+    clockBadge.addEventListener("mouseleave", () => {
+        clockBadge.style.cursor = "pointer";
+        clockBadge.style.background = colors.bg;
+    });
+    clockBadge.innerHTML = `${CLOCK_ICON_SVG}<span style="margin-left:4px;vertical-align:middle;">${timeText}</span>`;
+    clockBadge.classList.add("chzzk_clock_badge");
+    // 라이트 모드에서 아이콘 색상은 텍스트 색상과 동기화
+    const svg = clockBadge.querySelector("svg");
+    if (svg) {
+        svg.style.color = colors.fg;
+        svg.setAttribute("fill", "currentColor");
+    }
+
+    // 파워 뱃지 바로 오른쪽 혹은 기본 위치에 삽입
+    if (powerBadge && powerBadge.parentNode) {
+        powerBadge.parentNode.insertBefore(clockBadge, powerBadge.nextSibling);
+        lastClockNode = clockBadge;
+        return;
+    }
+
+    if (insertBadgeElement(clockBadge, targetInfo)) {
+        lastClockNode = clockBadge;
+    }
+}
+
+async function getViewPowerAmountBySubscription(channelId) {
+    try {
+        const res = await fetch(
+            `https://api.chzzk.naver.com/service/v1/channels/${channelId}/subscription`,
+            { credentials: "include" }
+        );
+        const data = await res.json();
+        const tierNo =
+            data && data.content && typeof data.content.tierNo === "number"
+                ? data.content.tierNo
+                : null;
+        if (tierNo === 1) return 120;
+        if (tierNo === 2) return 200;
+    } catch (e) {}
+    return 100;
+}
+
+async function clickPowerButtonIfExists() {
+    const aside = document.querySelector("aside#aside-chatting");
+    if (!aside) return;
+    const channelId = getChannelIdFromUrl();
+    if (!channelId) return;
+    const btn = Array.from(aside.querySelectorAll("button")).find((b) => {
+        const text = b.textContent || "";
+        return Array.from(b.classList).some((cls) =>
+            cls.startsWith("live_chatting_power_button__") ||
+            cls.includes("_power_button_") ||
+            cls.includes("_chatting_power_button_") ||
+            cls.includes("_live_chatting_power_button_") ||
+            cls.includes("power_button") ||
+            (cls.includes("_button_") && (
+                (text.includes("통나무") && text.includes("받기")) ||
+                (text.includes("파워") && text.includes("받기")) ||
+                (text.includes("1시간") && text.includes("받기"))
+            ))
+        ) || (
+            (text.includes("통나무") && text.includes("받기")) ||
+            (text.includes("파워") && text.includes("받기")) ||
+            (text.includes("1시간") && text.includes("받기"))
+        );
+    });
+    if (btn) {
+        btn.click();
+        console.log(
+            "[치지직 통나무 파워 자동 획득] 자동 클릭: live_chatting_power_button"
+        );
+        // 로그 저장 (최근 1분 내 view 기록이 없을 때만 저장)
+        try {
+            const result = await storageGet("local", ["powerLogs"]);
+            const logs = result.powerLogs || [];
+            const now = Date.now();
+            const hasRecentViewInStorage = logs.some(
+                (log) =>
+                    log &&
+                    log.method === "view" &&
+                    log.timestamp &&
+                    new Date(log.timestamp).getTime() >= now - 60 * 1000
+            );
+            const hasRecentViewInMemory =
+                typeof lastViewLogTimestampMs === "number" &&
+                lastViewLogTimestampMs >= now - 60 * 1000;
+            if (!(hasRecentViewInStorage || hasRecentViewInMemory)) {
+                const amountToLog = await getViewPowerAmountBySubscription(channelId);
+                await savePowerLog(channelId, amountToLog, "view");
+                lastViewLogTimestampMs = now;
+                // 팝업에 파워 획득 알림
+                chrome.runtime.sendMessage({ action: 'powerAcquired' });
+            }
+        } catch (e) {
+            // 스토리지 조회 실패 시에는 기존 동작 유지
+            const now = Date.now();
+            const hasRecentViewInMemory =
+                typeof lastViewLogTimestampMs === "number" &&
+                lastViewLogTimestampMs >= now - 60 * 1000;
+            if (!hasRecentViewInMemory) {
+                const amountToLog = await getViewPowerAmountBySubscription(channelId);
+                await savePowerLog(channelId, amountToLog, "view");
+                lastViewLogTimestampMs = now;
+                // 팝업에 파워 획득 알림
+                chrome.runtime.sendMessage({ action: 'powerAcquired' });
+            }
+        }
+        fetchAndUpdatePowerAmount();
+    }
+}
+
+// ============================
+// 예측 참여(배팅) 추적 및 정산
+// ============================
+
+// 활성 배팅 저장 키
+const PREDICTION_BETS_KEY = "predictionBetsByChannel";
+
+// PerformanceObserver 기반 감지 사용
+startPredictionPerformanceObserver();
+
+let predictionLogDetailTimer = null;
+let predictionPollerTimer = null;
+// 확장 재시작 대비 폴러 시작
+cleanupFinishedPredictions();
+startPredictionPoller();
+startPredictionLogDetailPoller();
+
+
+// PerformanceObserver로 참여 요청 URL 감지 → GET 참여 정보 조회 후 저장/로그
+function startPredictionPerformanceObserver() {
+    try {
+        if (!('PerformanceObserver' in window)) return;
+        const observer = new PerformanceObserver((list) => {
+            const entries = list.getEntries();
+            for (const e of entries) {
+                try {
+                    const url = e.name || '';
+                    if (
+                        typeof url === 'string' &&
+                        url.includes('/log-power/predictions/') &&
+                        url.endsWith('/participation')
+                    ) {
+                        console.log("[치지직 통나무 파워 자동 획득] 감지: prediction", url);
+                        const match = url.match(/channels\/([^\/]+)\/log-power\/predictions\/([^\/]+)\/participation/);
+                        const channelIdFromUrl = match ? match[1] : null;
+                        const predictionIdFromUrl = match ? match[2] : null;
+                        if (channelIdFromUrl && predictionIdFromUrl) {
+                            fetchParticipationAndRecord(channelIdFromUrl, predictionIdFromUrl);
+                        }
+                    }
+                } catch (_) {
+                    console.log(_);
+                }
+            }
+        });
+        observer.observe({ type: 'resource', buffered: true });
+    } catch (e) {
+        console.error('startPredictionPerformanceObserver error', e);
+    }
+}
+
+async function fetchParticipationAndRecord(channelId, predictionId) {
+    try {
+        // 서버 측 처리 여유 시간
+        await new Promise((r) => setTimeout(r, 3000));
+        const url = `https://api.chzzk.naver.com/service/v1/channels/${channelId}/log-power/predictions/${predictionId}?fields=participation`;
+        const res = await fetch(url, { credentials: 'include' });
+        if (!res.ok) return;
+        const json = await res.json();
+        const content = json && json.content;
+        if (!content || !content.participation) return;
+        const selectedOptionNo = content.participation.selectedOptionNo;
+        const bettingPowers = content.participation.bettingPowers;
+        if (typeof selectedOptionNo !== 'number' || typeof bettingPowers !== 'number') return;
+
+        const { [PREDICTION_BETS_KEY]: byChannel } = await storageGet("sync", PREDICTION_BETS_KEY);
+        const map = byChannel || {};
+        const list = Array.isArray(map[channelId]) ? map[channelId] : [];
+        const prev = list.find(b => b.predictionId === predictionId);
+        if (prev) {
+            // 기존 음수 로그 제거
+            try {
+                const store = await storageGet("local", ['powerLogs']);
+                const logs = store.powerLogs || [];
+                const idx = logs.findIndex(l => l.channelId === channelId && String(l.method || '').toLowerCase() === 'prediction' && Number(l.amount) === -Math.abs(prev.bettingPowers));
+                if (idx !== -1) {
+                    logs.splice(idx, 1);
+                    await storageSet("local", { powerLogs: logs });
+                }
+            } catch (_) {}
+        }
+
+        const bet = {
+            predictionId,
+            selectedOptionNo,
+            bettingPowers,
+            status: 'PENDING',
+            createdAt: Date.now(),
+        };
+        await recordPredictionBet(channelId, bet);
+        await savePowerLog(channelId, -Math.abs(bettingPowers), 'prediction', null, {
+            predictionId
+        });
+    } catch (e) {}
+}
+
+// 시작 시 저장소에 남아있는 종료된 예측들 즉시 정리
+async function cleanupFinishedPredictions() {
+    try {
+        const { [PREDICTION_BETS_KEY]: byChannel } = await storageGet("sync", PREDICTION_BETS_KEY);
+        const map = byChannel || {};
+        let changed = false;
+        for (const channelId of Object.keys(map)) {
+            const list = Array.isArray(map[channelId]) ? map[channelId] : [];
+            const pendingOnly = list.filter(b => (String(b.status || 'PENDING').toUpperCase()) === 'PENDING');
+            if (pendingOnly.length !== list.length) {
+                map[channelId] = pendingOnly;
+                changed = true;
+            }
+        }
+        if (changed) {
+            await storageSet("sync", { [PREDICTION_BETS_KEY]: map });
+        }
+    } catch (_) {}
+}
+
+async function recordPredictionBet(channelId, bet) {
+    try {
+        const { [PREDICTION_BETS_KEY]: byChannel } = await storageGet("sync", PREDICTION_BETS_KEY);
+        const map = byChannel || {};
+        const list = Array.isArray(map[channelId]) ? map[channelId] : [];
+        // 동일 predictionId 중복 저장 방지: 최신으로 교체
+        const filtered = list.filter((b) => b.predictionId !== bet.predictionId);
+        map[channelId] = [...filtered, bet];
+        await storageSet("sync", { [PREDICTION_BETS_KEY]: map });
+    } catch (e) {
+        console.error("recordPredictionBet error", e);
+    }
+}
+
+function startPredictionPoller() {
+    if (predictionPollerTimer) return;
+    // 30초마다 상태 확인
+    predictionPollerTimer = setInterval(pollPredictionStatuses, 30 * 1000);
+    // 즉시 1회 실행
+    pollPredictionStatuses();
+}
+
+async function pollPredictionStatuses() {
+    try {
+        const { [PREDICTION_BETS_KEY]: byChannel } = await storageGet("sync", PREDICTION_BETS_KEY);
+        const map = byChannel || {};
+        const channelIds = Object.keys(map);
+        for (const channelId of channelIds) {
+            const bets = Array.isArray(map[channelId]) ? map[channelId] : [];
+            const pending = bets.filter((b) => b.status === "PENDING");
+            if (pending.length === 0) continue;
+
+            for (const bet of pending) {
+                try {
+                    const url = `https://api.chzzk.naver.com/service/v1/channels/${channelId}/log-power/predictions/${bet.predictionId}?fields=participation`;
+                    const res = await fetch(url, { credentials: "include" });
+                    if (!res.ok) continue;
+                    const json = await res.json();
+                    const content = json && json.content;
+                    if (!content || !content.status) continue;
+                    const status = String(content.status || "").toUpperCase();
+                    if (status === "CANCELLED" || status === "COMPLETED") {
+                        // 업데이트 및 저장
+                        bet.status = status;
+
+                        if (status === "COMPLETED") {
+                            fetchAndUpdatePowerAmount();
+                            const winningOptionNo = content.winningOptionNo;
+                            if (Number(winningOptionNo) === Number(bet.selectedOptionNo)) {
+                                const option = (content.optionList || []).find(o => Number(o.optionNo) === Number(bet.selectedOptionNo));
+                                const participationBet = content.participation && typeof content.participation.bettingPowers === 'number' ? content.participation.bettingPowers : bet.bettingPowers;
+                                if (option && typeof option.distributionRate === "number" && typeof participationBet === 'number') {
+                                        const payout = Math.round(Math.abs(participationBet) * option.distributionRate);
+                                        const net = Math.max(0, Math.abs(payout) - Math.abs(participationBet));
+                                        // 새로운 로그 추가 대신 기존 prediction 로그 수정 (순이익 기준)
+                                    try {
+                                        const store = await storageGet("local", ['powerLogs']);
+                                        const logs = store.powerLogs || [];
+                                        let updated = false;
+                                        for (let i = 0; i < logs.length; i++) {
+                                            const l = logs[i];
+                                            if (l && String(l.method||'').toLowerCase()==='prediction' && l.predictionId === bet.predictionId) {
+                                                    logs[i] = { ...l, amount: net };
+                                                updated = true;
+                                                break;
+                                            }
+                                        }
+                                        if (updated) {
+                                            await storageSet("local", { powerLogs: logs });
+                                        }
+                                    } catch (_) {}
+                                }
+                            }
+                        }
+                        if (status === 'CANCELLED') {
+                            fetchAndUpdatePowerAmount();
+                            // 취소 시 음수 로그 삭제
+                            try {
+                                const store = await storageGet("local", ['powerLogs']);
+                                const logs = store.powerLogs || [];
+                                const idx = logs.findIndex(l => l.channelId === channelId && String(l.method || '').toLowerCase() === 'prediction' && Number(l.amount) === -Math.abs(bet.bettingPowers));
+                                if (idx !== -1) {
+                                    logs.splice(idx, 1);
+                                    await storageSet("local", { powerLogs: logs });
+                                }
+                            } catch (_) {}
+                        }
+                    }
+                } catch (err) {
+                    // 개별 실패는 무시하고 다음으로 진행
+                }
+            }
+
+            // 저장 상태 갱신 (완료/취소 반영)
+            const updatedList = bets.filter(b => b.status === "PENDING");
+            map[channelId] = updatedList;
+            await storageSet("sync", { [PREDICTION_BETS_KEY]: map });
+        }
+    } catch (e) {
+        // 전체 폴링 실패는 조용히 무시
+    }
+}
+
+// 로그에 저장된 prediction 항목의 상세 정보를 최종 상태가 되면 채워 넣는 폴러
+function startPredictionLogDetailPoller() {
+    if (predictionLogDetailTimer) return;
+    predictionLogDetailTimer = setInterval(syncFinalizedPredictionLogDetails, 30 * 1000);
+    syncFinalizedPredictionLogDetails();
+}
+
+async function syncFinalizedPredictionLogDetails() {
+    try {
+        const store = await storageGet("local", ['powerLogs']);
+        const logs = store.powerLogs || [];
+        const targets = logs.filter(l => String(l.method||'').toLowerCase()==='prediction' && l.predictionId && (!l.predictionStatus || String(l.predictionStatus).toUpperCase()==='PENDING'));
+        if (targets.length === 0) return;
+        for (const log of targets) {
+            const channelId = log.channelId;
+            const predictionId = log.predictionId;
+            if (!channelId || !predictionId) continue;
+            try {
+                const url = `https://api.chzzk.naver.com/service/v1/channels/${channelId}/log-power/predictions/${predictionId}?fields=participation`;
+                const res = await fetch(url, { credentials: 'include' });
+                if (!res.ok) continue;
+                const data = await res.json();
+                const c = data && data.content ? data.content : null;
+                if (!c || !c.status) continue;
+                const status = String(c.status).toUpperCase();
+                if (status === 'EXPIRED' || status === 'CANCELLED' || status === 'COMPLETED') {
+                    // 선택 옵션 및 배팅 파워
+                    const selectedOptionNo = c.participation ? c.participation.selectedOptionNo : undefined;
+                    const bettingPowers = c.participation ? c.participation.bettingPowers : undefined;
+                    const participationStatus = c.participation && c.participation.status ? String(c.participation.status).toUpperCase() : undefined;
+                    const winningPowers = c.participation && typeof c.participation.winningPowers === 'number' ? c.participation.winningPowers : undefined;
+                    let distributionRate;
+                    if (selectedOptionNo != null && Array.isArray(c.optionList)) {
+                        const opt = c.optionList.find(o => Number(o.optionNo) === Number(selectedOptionNo));
+                        if (opt && typeof opt.distributionRate === 'number') distributionRate = opt.distributionRate;
+                    }
+                    // 해당 predictionId의 모든 로그 업데이트
+                    for (const l of logs) {
+                        if (l.predictionId === predictionId && String(l.method||'').toLowerCase()==='prediction') {
+                            l.predictionStatus = status;
+                            if (selectedOptionNo != null) l.participationSelectedOptionNo = selectedOptionNo;
+                            if (typeof bettingPowers === 'number') l.participationBettingPowers = bettingPowers;
+                            if (typeof distributionRate === 'number') l.distributionRate = distributionRate;
+                            if (c.predictionTitle) l.predictionTitle = c.predictionTitle;
+                            // 최종 확정 후, 참여가 WON이고 서버 winningPowers와 로그 금액이 다르면 수정 (양수 로그만)
+                            if (participationStatus === 'WON' && typeof winningPowers === 'number') {
+                                if (typeof l.amount === 'number' && l.amount > 0 && l.amount !== winningPowers) {
+                                    l.amount = winningPowers;
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (_) { }
+        }
+        await storageSet("local", { powerLogs: logs });
+    } catch (_) {}
+}
+
+// 1초마다 badge 감시 및 복구
+setInterval(() => {
+    const badgeExists = document.querySelector(".chzzk_power_badge");
+    if (!badgeExists) {
+        updatePowerCountBadge();
+    }
+    const clockExists = document.querySelector(".chzzk_clock_badge");
+    if (!clockExists && clockToggle) {
+        updateClockDisplay();
+    }
+}, 1000);
