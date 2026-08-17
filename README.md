@@ -1,10 +1,10 @@
-# 치지직 통나무 파워 자동 획득 — Firefox 포트
+# 치지직 통나무 파워 도우미
 
 치지직 라이브 방송에서 통나무(파워)를 자동으로 획득하고, 보유 파워와 채널별 랭킹을 표시하는 Firefox용 WebExtension입니다.
 
 지원 버전은 Firefox 데스크톱/Android 142 이상입니다.
 
-이 저장소는 [choco-lily/chzzk_auto_log_power](https://github.com/choco-lily/chzzk_auto_log_power)의 최신 Chrome 코드를 Firefox Manifest V2에 맞게 포팅한 파생 프로젝트입니다. 치지직 또는 네이버의 공식 확장 프로그램이 아닙니다.
+이 저장소는 [choco-lily/chzzk_auto_log_power](https://github.com/choco-lily/chzzk_auto_log_power)의 최신 Chrome 코드를 Firefox Manifest V2에 맞게 포팅하고, 최신 치지직 DOM 대응과 Android 호환성을 보완한 파생 프로젝트입니다. 치지직, 네이버 또는 Mozilla의 공식 확장 프로그램이 아닙니다.
 
 ## 포팅 내용
 
@@ -16,12 +16,18 @@
 
 ## 임시 설치
 
-1. [Releases](../../releases)에서 ZIP을 받거나 `npm run package`로 패키지를 만듭니다.
+1. [Releases](../../releases)에서 `AMO-UPLOAD-chzzk-log-power-helper-1.3.2.zip`을 받거나 `npm run package`로 패키지를 만듭니다.
 2. Firefox에서 `about:debugging#/runtime/this-firefox`를 엽니다.
 3. **임시 부가 기능 로드**를 누릅니다.
 4. 압축을 푼 폴더의 `manifest.json`을 선택합니다.
 
 임시 부가 기능은 Firefox를 재시작하면 제거됩니다. 일반 Firefox에 영구 설치하려면 Mozilla 서명이 된 XPI가 필요합니다.
+
+## AMO 제출 시 주의
+
+AMO의 **부가 기능 파일 업로드**에는 릴리스 자산 `AMO-UPLOAD-chzzk-log-power-helper-1.3.2.zip`만 사용하세요. GitHub가 자동으로 제공하는 **Source code (zip)**, 저장소 전체를 받은 ZIP, 또는 `*-source.zip`은 확장 설치 파일이 아닙니다.
+
+올바른 ZIP을 열면 첫 화면에 `manifest.json`, `content.js`, `popup.js` 등이 바로 보여야 합니다. `chzzk-log-power-helper/manifest.json`처럼 상위 폴더가 먼저 보이면 AMO가 `manifest.json was not found` 오류를 냅니다. 패키징 스크립트는 이 구조를 자동 검사하며 잘못된 ZIP이면 실패합니다.
 
 ## 개발 및 검증
 
@@ -33,6 +39,10 @@ npm run package
 ```
 
 실제 획득 동작은 치지직에 로그인한 Firefox에서 라이브 방송을 1시간 이상 시청한 뒤, 개발자 도구 콘솔과 파워 로그를 함께 확인해야 합니다.
+
+## 개인정보 보호
+
+확장은 현재 보고 있는 치지직 채널을 식별하고 화면의 받기 버튼을 클릭하며, 로그인된 사용자의 치지직 통나무 잔액·보상·승부예측 정보를 치지직 API에서 조회합니다. 데이터는 개발자 서버로 전송하지 않으며 획득 로그와 설정은 브라우저 저장소에만 보관합니다. 자세한 내용은 [개인정보처리방침](PRIVACY.md)을 확인하세요.
 
 ## 라이선스 및 저작자 표시
 

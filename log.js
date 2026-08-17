@@ -32,6 +32,54 @@ function storageRemove(area, keys) {
     });
 }
 
+function createElement(tagName, { id, className, text, cssText } = {}) {
+    const element = document.createElement(tagName);
+    if (id) element.id = id;
+    if (className) element.className = className;
+    if (text !== undefined && text !== null) element.textContent = String(text);
+    if (cssText) element.style.cssText = cssText;
+    return element;
+}
+
+function safeHttpsImageUrl(value, fallback) {
+    try {
+        const url = new URL(value);
+        if (url.protocol === 'https:') return url.href;
+    } catch (_) {}
+    return fallback;
+}
+
+function replaceWithMessage(container, message, color = '#aaa') {
+    const messageNode = createElement('div', {
+        text: message,
+        cssText: `color:${color};font-size:12px;`,
+    });
+    container.replaceChildren(messageNode);
+}
+
+function createFormGroup(labelText, control, { id, display } = {}) {
+    const group = createElement('div', { id, className: 'form-group' });
+    if (display) group.style.display = display;
+    group.appendChild(createElement('label', { text: labelText }));
+    group.appendChild(control);
+    return group;
+}
+
+function createModalShell({ overlayId, modalId, title, closeId }) {
+    const overlay = createElement('div', { id: overlayId, className: 'edit-modal-overlay' });
+    const modal = createElement('div', { id: modalId, className: 'edit-modal' });
+    const header = createElement('div', { className: 'edit-modal-header' });
+    header.appendChild(createElement('h3', { text: title }));
+    const close = createElement('button', { id: closeId, className: 'close-btn', text: '×' });
+    close.type = 'button';
+    header.appendChild(close);
+    const content = createElement('div', { className: 'edit-modal-content' });
+    const footer = createElement('div', { className: 'edit-modal-footer' });
+    modal.append(header, content, footer);
+    overlay.appendChild(modal);
+    return { overlay, modal, content, footer };
+}
+
 // 페이지 로드 시 실행
 document.addEventListener('DOMContentLoaded', function() {
     loadLogs();
@@ -175,24 +223,25 @@ function ensureConfirmResources() {}
 function showConfirm(message, { title = '확인', okText = '확인', cancelText = '취소', destructive = false } = {}) {
 	ensureConfirmResources();
 	return new Promise((resolve) => {
-		const overlay = document.createElement('div');
-		overlay.className = 'edit-modal-overlay';
-		const modal = document.createElement('div');
-		modal.className = 'edit-modal';
-		modal.innerHTML = `
-			<div class="edit-modal-header">
-				<h3>${title}</h3>
-				<button class="close-btn" id="closeConfirmModal">×</button>
-			</div>
-			<div class="edit-modal-content">
-				<div style="font-size:14px; line-height:1.6;">${message}</div>
-			</div>
-			<div class="edit-modal-footer">
-				<button class="cancel-btn" id="confirmCancelBtn">${cancelText}</button>
-				<button class="${destructive ? 'modal-delete-btn' : 'save-btn'}" id="confirmOkBtn">${okText}</button>
-			</div>
-		`;
-		overlay.appendChild(modal);
+		const { overlay, modal, content, footer } = createModalShell({
+			title,
+			closeId: 'closeConfirmModal',
+		});
+		content.appendChild(createElement('div', {
+			text: message,
+			cssText: 'font-size:14px;line-height:1.6;',
+		}));
+		const cancelButton = createElement('button', {
+			id: 'confirmCancelBtn',
+			className: 'cancel-btn',
+			text: cancelText,
+		});
+		const okButton = createElement('button', {
+			id: 'confirmOkBtn',
+			className: destructive ? 'modal-delete-btn' : 'save-btn',
+			text: okText,
+		});
+		footer.append(cancelButton, okButton);
 		document.body.appendChild(overlay);
 
 		const cleanup = () => { if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay); };
@@ -219,7 +268,8 @@ async function loadLogs() {
         document.getElementById('loading').style.display = 'none';
     } catch (error) {
         console.error('로그 로드 실패:', error);
-        document.getElementById('loading').innerHTML = '<p>로그를 불러오는데 실패했습니다.</p>';
+        const loading = document.getElementById('loading');
+        loading.replaceChildren(createElement('p', { text: '로그를 불러오는데 실패했습니다.' }));
     }
 }
 
@@ -362,19 +412,25 @@ function updatePeriodStats() {
 // 로그 렌더링
 function renderLogs() {
     const logsList = document.getElementById('logsList');
+    logsList.replaceChildren();
     
     if (filteredLogs.length === 0) {
-        logsList.innerHTML = `
-            <div class="empty-state">
-                <div style="font-size: 48px; margin-bottom: 16px;">🌲</div>
-                <h3>로그가 없습니다</h3>
-                <p>치지직에서 통나무 파워를 획득하면<br>여기에 기록이 표시됩니다.</p>
-            </div>
-        `;
+        const empty = createElement('div', { className: 'empty-state' });
+        empty.appendChild(createElement('div', {
+            text: '🌲',
+            cssText: 'font-size:48px;margin-bottom:16px;',
+        }));
+        empty.appendChild(createElement('h3', { text: '로그가 없습니다' }));
+        const description = createElement('p');
+        description.append('치지직에서 통나무 파워를 획득하면');
+        description.appendChild(document.createElement('br'));
+        description.append('여기에 기록이 표시됩니다.');
+        empty.appendChild(description);
+        logsList.appendChild(empty);
         return;
     }
     
-    logsList.innerHTML = filteredLogs.map(log => {
+    filteredLogs.forEach((log, logIndex) => {
         const date = new Date(log.timestamp);
         const formattedDate = date.toLocaleDateString('ko-KR', {
             year: 'numeric',
@@ -382,52 +438,87 @@ function renderLogs() {
             day: '2-digit',
             hour: '2-digit',
             minute: '2-digit',
-            second: '2-digit'
+            second: '2-digit',
         });
-        
         const methodClass = getMethodClass(log.method);
         let methodText = getMethodText(log.method);
-        // VIEW + 구독 티어별 라벨 보강
         if (String(log.method || '').toUpperCase() === 'VIEW') {
-            const amt = typeof log.amount === 'number' ? log.amount : NaN;
-            if (amt === 120) methodText = '시청 - 1티어 구독';
-            else if (amt === 200) methodText = '시청 - 2티어 구독';
+            const amount = typeof log.amount === 'number' ? log.amount : NaN;
+            if (amount === 120) methodText = '시청 - 1티어 구독';
+            else if (amount === 200) methodText = '시청 - 2티어 구독';
         }
-        
         const isPrediction = String(log.method || '').toLowerCase() === 'prediction';
-        const detailsBtn = isPrediction && log.predictionId ? `<button class="detail-btn" data-channel-id="${log.channelId}" data-prediction-id="${log.predictionId}">상세</button>` : '';
-        return `
-            <div class="log-item" data-log-index="${filteredLogs.indexOf(log)}">
-                <img src="${log.channelImageUrl || 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDgiIGhlaWdodD0iNDgiIHZpZXdCb3g9IjAgMCA0OCA0OCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPGNpcmNsZSBjeD0iMjQiIGN5PSIyNCIgcj0iMjQiIGZpbGw9IiNFMkU4RjAiLz4KPHN2ZyB4PSIxMiIgeT0iMTIiIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIj4KPHBhdGggZD0iTTEyIDJDMTMuMSAyIDE0IDIuOSAxNCA0VjEwQzE0IDExLjEgMTMuMSAxMiAxMiAxMkMxMC45IDEyIDEwIDExLjEgMTAgMTBWNFMxMC45IDIgMTIgMloiIGZpbGw9IiM5Q0EzQUYiLz4KPHBhdGggZD0iTTEyIDE0QzEzLjEgMTQgMTQgMTQuOSAxNCAxNlYyMEMxNCAyMS4xIDEzLjEgMjIgMTIgMjJDMTAuOSAyMiAxMCAyMS4xIDEwIDIwVjE2QzEwIDE0LjkgMTAuOSAxNCAxMiAxNFoiIGZpbGw9IiM5Q0EzQUYiLz4KPC9zdmc+Cjwvc3ZnPg=='}" 
-                     alt="${log.channelName}" class="channel-image">
-                <div class="log-content">
-                    <div class="channel-name">
-                        <a href="https://chzzk.naver.com/${log.channelId}" target="_blank" class="channel-link">
-                            ${log.channelName}${log.verifiedMark ? ' <img src="https://ssl.pstatic.net/static/nng/glive/image/icon_official_mark.png" alt="인증" style="width:16px;height:16px;vertical-align:middle;margin-left:2px;">' : ''}
-                        </a> ${detailsBtn}
-                    </div>
-                    <div class="log-details">
-                        <span class="method-badge ${methodClass}">${methodText}</span>
-                        <span class="timestamp">${formattedDate}</span>
-                    </div>
-                    ${isPrediction ? `<div class="prediction-details" data-for="${log.predictionId}" style="display:none;margin-top:8px;"></div>` : ''}
-                </div>
-                <div class="log-actions">
-                    ${(() => {
-                        const val = typeof log.amount === 'number' ? log.amount : Number(log.amount) || 0;
-                        const sign = val < 0 ? '-' : '+';
-                        const cls = val < 0 ? 'amount amount-neg' : 'amount amount-pos';
-                        const absVal = Math.abs(val);
-                        return `<div class="${cls}">${sign}${absVal.toLocaleString()}</div>`;
-                    })()}
-                    <div class="action-buttons">
-                        <button class="edit-btn" data-log-index="${filteredLogs.indexOf(log)}">수정</button>
-                        <button class="delete-btn" data-log-index="${filteredLogs.indexOf(log)}">삭제</button>
-                    </div>
-                </div>
-            </div>
-        `;
-    }).join('');
+        const item = createElement('div', { className: 'log-item' });
+        item.dataset.logIndex = String(logIndex);
+
+        const image = createElement('img', { className: 'channel-image' });
+        image.src = safeHttpsImageUrl(
+            log.channelImageUrl,
+            'https://ssl.pstatic.net/cmstatic/nng/img/img_anonymous_square_gray_opacity2x.png?type=f120_120_na'
+        );
+        image.alt = String(log.channelName || '채널');
+        item.appendChild(image);
+
+        const content = createElement('div', { className: 'log-content' });
+        const channelName = createElement('div', { className: 'channel-name' });
+        const link = createElement('a', {
+            className: 'channel-link',
+            text: log.channelName || '알 수 없는 채널',
+        });
+        link.href = `https://chzzk.naver.com/${encodeURIComponent(String(log.channelId || ''))}`;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        if (log.verifiedMark) {
+            const verified = createElement('img', {
+                cssText: 'width:16px;height:16px;vertical-align:middle;margin-left:2px;',
+            });
+            verified.src = 'https://ssl.pstatic.net/static/nng/glive/image/icon_official_mark.png';
+            verified.alt = '인증';
+            link.appendChild(verified);
+        }
+        channelName.appendChild(link);
+        if (isPrediction && log.predictionId) {
+            const detailButton = createElement('button', { className: 'detail-btn', text: '상세' });
+            detailButton.type = 'button';
+            detailButton.dataset.channelId = String(log.channelId || '');
+            detailButton.dataset.predictionId = String(log.predictionId);
+            channelName.appendChild(detailButton);
+        }
+        content.appendChild(channelName);
+
+        const details = createElement('div', { className: 'log-details' });
+        const method = createElement('span', { className: 'method-badge', text: methodText });
+        method.classList.add(methodClass);
+        details.append(method, createElement('span', { className: 'timestamp', text: formattedDate }));
+        content.appendChild(details);
+        if (isPrediction) {
+            const prediction = createElement('div', {
+                className: 'prediction-details',
+                cssText: 'display:none;margin-top:8px;',
+            });
+            prediction.dataset.for = String(log.predictionId || '');
+            content.appendChild(prediction);
+        }
+        item.appendChild(content);
+
+        const actions = createElement('div', { className: 'log-actions' });
+        const value = typeof log.amount === 'number' ? log.amount : Number(log.amount) || 0;
+        actions.appendChild(createElement('div', {
+            className: value < 0 ? 'amount amount-neg' : 'amount amount-pos',
+            text: `${value < 0 ? '-' : '+'}${Math.abs(value).toLocaleString()}`,
+        }));
+        const buttons = createElement('div', { className: 'action-buttons' });
+        const editButton = createElement('button', { className: 'edit-btn', text: '수정' });
+        editButton.type = 'button';
+        editButton.dataset.logIndex = String(logIndex);
+        const deleteButton = createElement('button', { className: 'delete-btn', text: '삭제' });
+        deleteButton.type = 'button';
+        deleteButton.dataset.logIndex = String(logIndex);
+        buttons.append(editButton, deleteButton);
+        actions.appendChild(buttons);
+        item.appendChild(actions);
+        logsList.appendChild(item);
+    });
     
     // 이벤트 리스너 추가
     addEventListeners();
@@ -467,20 +558,20 @@ function addEventListeners() {
             const container = e.currentTarget.closest('.log-item').querySelector(`.prediction-details[data-for="${predictionId}"]`);
             if (!container) return;
             // 토글: 이미 열려있으면 닫고 반환 (추가 요청 없음)
-            if (container.style.display !== 'none' && container.innerHTML && container.innerHTML.trim() !== '') {
+            if (container.style.display !== 'none' && container.childNodes.length > 0) {
                 container.style.display = 'none';
                 return;
             }
             try {
                 container.style.display = 'block';
-                container.innerHTML = '<div style="color:#aaa;font-size:12px;">불러오는 중...</div>';
+                replaceWithMessage(container, '불러오는 중...');
                 // 우선 활성 Chzzk 탭의 content script에 프록시 요청 (CORS 회피)
                 const data = await proxyFetchPredictionDetail(channelId, predictionId);
                 const c = data && data.content ? data.content : null;
                 if (!c) throw new Error('데이터 없음');
                 const status = String(c.status || '').toUpperCase();
                 if (!(status === 'EXPIRED' || status === 'CANCELLED' || status === 'COMPLETED')) {
-                    container.innerHTML = '<div style="color:#aaa;font-size:12px;">참여 마감 전까지는 확인이 불가능합니다.</div>';
+                    replaceWithMessage(container, '참여 마감 전까지는 확인이 불가능합니다.');
                     return;
                 }
                 const opts = Array.isArray(c.optionList) ? c.optionList : [];
@@ -515,43 +606,83 @@ function addEventListeners() {
                         }
                     } catch (_) {}
                 }
-                const renderOption = (o) => {
-                    const pct = typeof o.percentage === 'number' ? o.percentage : Math.round((o.totalLogPowers || 0) / Math.max(1, opts.reduce((s,x)=>s+(x.totalLogPowers||0),0)) * 100);
+                const card = createElement('div', {
+                    cssText: 'border:1px solid var(--border-color);border-radius:10px;padding:10px;',
+                });
+                if (status === 'EXPIRED') {
+                    card.appendChild(createElement('div', {
+                        text: '아직 승부예측이 진행중입니다.',
+                        cssText: 'margin:-2px 0 6px 0;color:#ffcc00;font-size:12px;',
+                    }));
+                }
+                card.appendChild(createElement('div', {
+                    text: c.predictionTitle || '승부예측',
+                    cssText: 'font-weight:700;margin-bottom:8px;',
+                }));
+
+                opts.forEach((option) => {
+                    const o = option || {};
+                    const rawPct = typeof o.percentage === 'number' ? o.percentage : Math.round((o.totalLogPowers || 0) / Math.max(1, opts.reduce((s,x)=>s+(x.totalLogPowers||0),0)) * 100);
+                    const pct = Math.max(0, Math.min(100, Number(rawPct) || 0));
                     const isSelected = Number(o.optionNo)===Number(selected);
                     const isWinner = Number(o.optionNo)===Number(c.winningOptionNo);
                     const hasWinner = c.winningOptionNo != null;
                     const selectColor = isSelected ? (hasWinner ? (isWinner ? '#25ae66' : '#e23c3c') : '#25ae66') : null; // green if win, red if lose, black if no winner
                     const borderCss = isSelected ? `1px solid ${selectColor}` : '1px solid var(--border-color)';
                     const barColor = isWinner ? '#25ae66' : ('#2a6aff');
-                    return `
-                        <div style="border:${borderCss};border-radius:8px;padding:10px;margin:8px 0;${isWinner?`background:#0f2f23 url('https://ssl.pstatic.net/static/nng/glive/icon/power/prediction_power_win.png') no-repeat right 0px top 0px / 100px;`:''}">
-                            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-                                <div style="font-weight:700;">${o.optionText || ''}</div>
-                                <div style="font-weight:800;">${pct}%</div>
-                            </div>
-                            <div style="height:6px;background:var(--bg-tertiary);border-radius:4px;overflow:hidden;">
-                                <div style="width:${pct}%;height:100%;background:${barColor};"></div>
-                            </div>
-                            <div style="display:flex;gap:12px;color:#aaa;font-size:12px;margin-top:6px;align-items:center;">
-                                <span>👥 ${mk(o.participantCount)}</span>
-                                <span>🪵 ${mkNum(o.totalLogPowers)}</span>
-                                <span>⚖️ 1:${o.distributionRate ?? '-'}</span>
-                            </div>
-                        </div>`;
+                    const optionCard = createElement('div', {
+                        cssText: `border:${borderCss};border-radius:8px;padding:10px;margin:8px 0;`,
+                    });
+                    if (isWinner) {
+                        optionCard.style.background = "#0f2f23 url('https://ssl.pstatic.net/static/nng/glive/icon/power/prediction_power_win.png') no-repeat right 0px top 0px / 100px";
+                    }
+                    const heading = createElement('div', {
+                        cssText: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;',
+                    });
+                    heading.append(
+                        createElement('div', { text: o.optionText || '', cssText: 'font-weight:700;' }),
+                        createElement('div', { text: `${pct}%`, cssText: 'font-weight:800;' })
+                    );
+                    optionCard.appendChild(heading);
+                    const bar = createElement('div', {
+                        cssText: 'height:6px;background:var(--bg-tertiary);border-radius:4px;overflow:hidden;',
+                    });
+                    bar.appendChild(createElement('div', {
+                        cssText: `width:${pct}%;height:100%;background:${barColor};`,
+                    }));
+                    optionCard.appendChild(bar);
+                    const stats = createElement('div', {
+                        cssText: 'display:flex;gap:12px;color:#aaa;font-size:12px;margin-top:6px;align-items:center;',
+                    });
+                    stats.append(
+                        createElement('span', { text: `👥 ${mk(o.participantCount)}` }),
+                        createElement('span', { text: `🪵 ${mkNum(o.totalLogPowers)}` }),
+                        createElement('span', { text: `⚖️ 1:${o.distributionRate ?? '-'}` })
+                    );
+                    optionCard.appendChild(stats);
+                    card.appendChild(optionCard);
+                });
+
+                const appendSummary = (label, value, color, marginTop) => {
+                    const summary = createElement('div', {
+                        cssText: `margin-top:${marginTop}px;color:${color};font-size:12px;display:flex;justify-content:flex-end;gap:6px;`,
+                    });
+                    summary.append(`${label} `);
+                    summary.appendChild(createElement('b', { text: mk(value) }));
+                    card.appendChild(summary);
                 };
-                const statusBanner = (status === 'EXPIRED') ? `<div style=\"margin:-2px 0 6px 0;color:#ffcc00;font-size:12px;\">아직 승부예측이 진행중입니다.</div>` : '';
-                container.innerHTML = `
-                    <div style="border:1px solid var(--border-color);border-radius:10px;padding:10px;">
-                        ${statusBanner}
-                        <div style="font-weight:700;margin-bottom:8px;">${c.predictionTitle || '승부예측'}</div>
-                        ${opts.map(renderOption).join('')}
-                        ${usedPower!=null ? `<div style=\"margin-top:4px;color:#aaa;font-size:12px;display:flex;justify-content:flex-end;gap:6px;\">사용 통나무 파워 <b>${mk(usedPower)}</b></div>`:''}
-                        ${(netWon>=1) ? `<div style=\"margin-top:2px;color:#25ae66;font-size:12px;display:flex;justify-content:flex-end;gap:6px;\">획득 통나무 파워 <b>${mk(netWon)}</b></div>`:''}
-                        ${(wonPower!=null && wonPower>=1) ? `<div style=\"margin-top:2px;color:#aaa;font-size:12px;display:flex;justify-content:flex-end;gap:6px;\">합계 통나무 파워 <b>${mk(wonPower)}</b></div>`:''}
-                    </div>`;
+                if (usedPower != null) appendSummary('사용 통나무 파워', usedPower, '#aaa', 4);
+                if (netWon >= 1) appendSummary('획득 통나무 파워', netWon, '#25ae66', 2);
+                if (wonPower != null && wonPower >= 1) appendSummary('합계 통나무 파워', wonPower, '#aaa', 2);
+                container.replaceChildren(card);
             } catch (err) {
                 container.style.display = 'block';
-                container.innerHTML = `<div style=\"color:#f66;font-size:12px;\">상세 정보를 불러오지 못했습니다. 치지직 라이브 탭을 하나 열어둔 뒤 다시 시도해주세요.<br>(${err && err.message ? err.message : err})</div>`;
+                const errorMessage = err && err.message ? err.message : String(err);
+                replaceWithMessage(
+                    container,
+                    `상세 정보를 불러오지 못했습니다. 치지직 라이브 탭을 하나 열어둔 뒤 다시 시도해주세요. (${errorMessage})`,
+                    '#f66'
+                );
             }
         });
     });
@@ -565,7 +696,7 @@ function getMethodClass(method) {
         case 'view': return 'method-view';
         case 'remember': return 'method-remember';
         case 'prediction': return 'method-prediction';
-        default: return method;
+        default: return 'method-others';
     }
 }
 
@@ -683,60 +814,70 @@ async function deleteLog(filteredIndex) {
 // 개별 로그 편집
 function editLog(filteredIndex) {
     const log = filteredLogs[filteredIndex];
-    
-    // 편집 폼 생성
-    const editForm = `
-        <div class="edit-modal-overlay" id="editModalOverlay">
-            <div class="edit-modal" id="editModal">
-                <div class="edit-modal-header">
-                    <h3>로그 수정</h3>
-                    <button class="close-btn" id="closeEditModal">×</button>
-                </div>
-                <div class="edit-modal-content">
-                    <div class="form-group">
-                        <label>채널명:</label>
-                        <input type="text" id="editChannelName" value="${log.channelName}" class="form-input">
-                    </div>
-                    <div class="form-group">
-                        <label>통나무 파워:</label>
-                        <input type="number" id="editAmount" value="${log.amount}" class="form-input">
-                    </div>
-                    <div class="form-group">
-                        <label>획득 방식:</label>
-                        ${(() => {
-                            const methodRaw = String(log.method || '').trim();
-                            const methodUpper = methodRaw.toUpperCase();
-                            const known = ['VIEW','FOLLOW', 'PREDICTION', 'OTHERS'];
-                            const hasUnknown = methodUpper && !known.includes(methodUpper);
-                            return `
-                                <select id="editMethod" class="form-input">
-                                    ${hasUnknown ? `<option value="Remember" selected>기억</option>` : ''}
-                                    <option value="VIEW" ${methodUpper === 'VIEW' ? 'selected' : ''}>시청</option>
-                                    <option value="FOLLOW" ${methodUpper === 'FOLLOW' ? 'selected' : ''}>팔로우</option>
-                                    <option value="PREDICTION" ${methodUpper === 'PREDICTION' ? 'selected' : ''}>승부예측</option>
-                                    <option value="OTHERS" ${methodUpper === 'OTHERS' ? 'selected' : ''}>기타</option>
-                                </select>
-                            `;
-                        })()}
-                    </div>
-                    <div class="form-group">
-                        <label>날짜/시간:</label>
-                        <input type="datetime-local" id="editTimestamp" value="${new Date(new Date(log.timestamp).getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 19)}" class="form-input" step="1">
-                    </div>
-                    <div class="form-group" id="editPredictionGroup" style="display:${String(log.method||'').toUpperCase()==='PREDICTION' ? 'block' : 'none'};">
-                        <label>predictionId:</label>
-                        <input type="text" id="editPredictionId" value="${log.predictionId || ''}" class="form-input">
-                    </div>
-                </div>
-                <div class="edit-modal-footer">
-                    <button class="cancel-btn" id="cancelEditModal">취소</button>
-                    <button class="save-btn" id="saveEditModal" data-log-index="${filteredIndex}">저장</button>
-                </div>
-            </div>
-        </div>
-    `;
-    
-    document.body.insertAdjacentHTML('beforeend', editForm);
+    if (!log) return;
+    const { overlay, content, footer } = createModalShell({
+        overlayId: 'editModalOverlay',
+        modalId: 'editModal',
+        title: '로그 수정',
+        closeId: 'closeEditModal',
+    });
+
+    const channelName = createElement('input', { id: 'editChannelName', className: 'form-input' });
+    channelName.type = 'text';
+    channelName.value = String(log.channelName || '');
+    content.appendChild(createFormGroup('채널명:', channelName));
+
+    const amount = createElement('input', { id: 'editAmount', className: 'form-input' });
+    amount.type = 'number';
+    amount.value = String(Number(log.amount) || 0);
+    content.appendChild(createFormGroup('통나무 파워:', amount));
+
+    const methodUpper = String(log.method || '').trim().toUpperCase();
+    const method = createElement('select', { id: 'editMethod', className: 'form-input' });
+    const methodOptions = [
+        ['VIEW', '시청'],
+        ['FOLLOW', '팔로우'],
+        ['PREDICTION', '승부예측'],
+        ['OTHERS', '기타'],
+    ];
+    if (methodUpper && !methodOptions.some(([value]) => value === methodUpper)) {
+        const remember = createElement('option', { text: '기억' });
+        remember.value = 'Remember';
+        remember.selected = true;
+        method.appendChild(remember);
+    }
+    methodOptions.forEach(([value, label]) => {
+        const option = createElement('option', { text: label });
+        option.value = value;
+        option.selected = methodUpper === value;
+        method.appendChild(option);
+    });
+    content.appendChild(createFormGroup('획득 방식:', method));
+
+    const timestamp = createElement('input', { id: 'editTimestamp', className: 'form-input' });
+    timestamp.type = 'datetime-local';
+    timestamp.step = '1';
+    const parsedTimestamp = new Date(log.timestamp).getTime();
+    timestamp.value = new Date((Number.isFinite(parsedTimestamp) ? parsedTimestamp : Date.now()) + 9 * 60 * 60 * 1000)
+        .toISOString()
+        .slice(0, 19);
+    content.appendChild(createFormGroup('날짜/시간:', timestamp));
+
+    const predictionId = createElement('input', { id: 'editPredictionId', className: 'form-input' });
+    predictionId.type = 'text';
+    predictionId.value = String(log.predictionId || '');
+    content.appendChild(createFormGroup('predictionId:', predictionId, {
+        id: 'editPredictionGroup',
+        display: methodUpper === 'PREDICTION' ? 'block' : 'none',
+    }));
+
+    const cancel = createElement('button', { id: 'cancelEditModal', className: 'cancel-btn', text: '취소' });
+    cancel.type = 'button';
+    const save = createElement('button', { id: 'saveEditModal', className: 'save-btn', text: '저장' });
+    save.type = 'button';
+    save.dataset.logIndex = String(filteredIndex);
+    footer.append(cancel, save);
+    document.body.appendChild(overlay);
     
     // 모달 이벤트 리스너 추가
     addModalEventListeners();
@@ -814,57 +955,40 @@ function openTestLogModal(baseIndex) {
         timestamp: new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString()
     };
     const nowLocal = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 19);
-    const form = `
-        <div class="edit-modal-overlay" id="testModalOverlay">
-            <div class="edit-modal" id="testModal">
-                <div class="edit-modal-header">
-                    <h3>테스트 로그 추가</h3>
-                    <button class="close-btn" id="closeTestModal">×</button>
-                </div>
-                <div class="edit-modal-content">
-                    <div class="form-group">
-                        <label>Channel Name:</label>
-                        <input type="text" id="testChannelName" value="${base.channelName || ''}" class="form-input">
-                    </div>
-                    <div class="form-group">
-                        <label>Channel ID:</label>
-                        <input type="text" id="testChannelId" value="${base.channelId || ''}" class="form-input">
-                    </div>
-                    <div class="form-group">
-                        <label>Log Power:</label>
-                        <input type="number" id="testAmount" value="${typeof base.amount === 'number' ? base.amount : 1}" class="form-input">
-                    </div>
-                    <div class="form-group">
-                        <label>method:</label>
-                        <input type="text" id="testMethod" value="${base.method || 'view'}" class="form-input">
-                    </div>
-                    <div class="form-group" id="testPredictionGroup" style="display:none;">
-                        <label>predictionId:</label>
-                        <input type="text" id="testPredictionId" value="" class="form-input">
-                    </div>
-                    <div class="form-group">
-                        <label>Image URL:</label>
-                        <input type="text" id="testImageUrl" value="${base.channelImageUrl || ''}" class="form-input">
-                    </div>
-                    <div class="form-group">
-                        <label>Date:</label>
-                        <input type="datetime-local" id="testTimestamp" value="${nowLocal}" class="form-input" step="1">
-                    </div>
-                </div>
-                <div class="edit-modal-footer">
-                    <button class="cancel-btn" id="cancelTestModal">취소</button>
-                    <button class="save-btn" id="saveTestModal">추가</button>
-                </div>
-            </div>
-        </div>
-    `;
-    document.body.insertAdjacentHTML('beforeend', form);
+    const { overlay, modal, content, footer } = createModalShell({
+        overlayId: 'testModalOverlay',
+        modalId: 'testModal',
+        title: '테스트 로그 추가',
+        closeId: 'closeTestModal',
+    });
+    const addInput = (label, id, type, value, options = {}) => {
+        const input = createElement('input', { id, className: 'form-input' });
+        input.type = type;
+        input.value = String(value ?? '');
+        if (options.step) input.step = options.step;
+        content.appendChild(createFormGroup(label, input, options));
+    };
+    addInput('Channel Name:', 'testChannelName', 'text', base.channelName);
+    addInput('Channel ID:', 'testChannelId', 'text', base.channelId);
+    addInput('Log Power:', 'testAmount', 'number', typeof base.amount === 'number' ? base.amount : 1);
+    addInput('method:', 'testMethod', 'text', base.method || 'view');
+    addInput('predictionId:', 'testPredictionId', 'text', '', {
+        id: 'testPredictionGroup',
+        display: 'none',
+    });
+    addInput('Image URL:', 'testImageUrl', 'text', base.channelImageUrl);
+    addInput('Date:', 'testTimestamp', 'datetime-local', nowLocal, { step: '1' });
+
+    const cancel = createElement('button', { id: 'cancelTestModal', className: 'cancel-btn', text: '취소' });
+    cancel.type = 'button';
+    const save = createElement('button', { id: 'saveTestModal', className: 'save-btn', text: '추가' });
+    save.type = 'button';
+    footer.append(cancel, save);
+    document.body.appendChild(overlay);
     // 이벤트
-    const overlay = document.getElementById('testModalOverlay');
     if (overlay) {
         overlay.addEventListener('click', (e) => { if (e.target === overlay) closeTestModal(); });
     }
-    const modal = document.getElementById('testModal');
     if (modal) modal.addEventListener('click', (e) => e.stopPropagation());
     const closeBtn = document.getElementById('closeTestModal');
     if (closeBtn) closeBtn.addEventListener('click', closeTestModal);
