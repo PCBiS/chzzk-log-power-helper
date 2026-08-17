@@ -1,10 +1,10 @@
-# 치지직 통나무 파워 자동 획득 — Firefox 포트
+# 치지직 통나무 파워 도우미
 
 치지직 라이브 방송에서 통나무(파워)를 자동으로 획득하고, 보유 파워와 채널별 랭킹을 표시하는 Firefox용 WebExtension입니다.
 
 지원 버전은 Firefox 데스크톱/Android 142 이상입니다.
 
-이 저장소는 [choco-lily/chzzk_auto_log_power](https://github.com/choco-lily/chzzk_auto_log_power)의 최신 Chrome 코드를 Firefox Manifest V2에 맞게 포팅한 파생 프로젝트입니다. 치지직 또는 네이버의 공식 확장 프로그램이 아닙니다.
+이 저장소는 [choco-lily/chzzk_auto_log_power](https://github.com/choco-lily/chzzk_auto_log_power)의 최신 Chrome 코드를 Firefox Manifest V2에 맞게 포팅하고, 최신 치지직 DOM 대응과 Android 호환성을 보완한 파생 프로젝트입니다. 치지직, 네이버 또는 Mozilla의 공식 확장 프로그램이 아닙니다.
 
 ## 포팅 내용
 
@@ -33,6 +33,10 @@ npm run package
 ```
 
 실제 획득 동작은 치지직에 로그인한 Firefox에서 라이브 방송을 1시간 이상 시청한 뒤, 개발자 도구 콘솔과 파워 로그를 함께 확인해야 합니다.
+
+## 개인정보 보호
+
+확장은 현재 보고 있는 치지직 채널을 식별하고 화면의 받기 버튼을 클릭하며, 로그인된 사용자의 치지직 통나무 잔액·보상·승부예측 정보를 치지직 API에서 조회합니다. 데이터는 개발자 서버로 전송하지 않으며 획득 로그와 설정은 브라우저 저장소에만 보관합니다. 자세한 내용은 [개인정보처리방침](PRIVACY.md)을 확인하세요.
 
 ## 라이선스 및 저작자 표시
 

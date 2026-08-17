@@ -22,6 +22,30 @@ function storageSet(area, values) {
     });
 }
 
+function appendStaticSvg(target, markup) {
+    const parsed = new DOMParser().parseFromString(markup, "image/svg+xml");
+    const svg = parsed.documentElement;
+    if (!svg || svg.nodeName.toLowerCase() === "parsererror") return null;
+    const imported = document.importNode(svg, true);
+    target.appendChild(imported);
+    return imported;
+}
+
+function createStyledElement(tagName, cssText, text) {
+    const element = document.createElement(tagName);
+    if (cssText) element.style.cssText = cssText;
+    if (text !== undefined && text !== null) element.textContent = String(text);
+    return element;
+}
+
+function safeHttpsImageUrl(value, fallback) {
+    try {
+        const url = new URL(value);
+        if (url.protocol === "https:") return url.href;
+    } catch (_) {}
+    return fallback;
+}
+
 let lastPowerNode = null;
 let isChannelInactive = false; // 비활성화 상태 고정용
 let followPowerCheckTimer = null;
@@ -764,9 +788,13 @@ function createPowerBadge(amount, isInactive) {
         badge.style.cursor = "pointer";
         badge.style.background = colors.bg;
     });
-    badge.innerHTML = `${POWER_ICON_SVG}<span style="margin-left:4px;vertical-align:middle;">${formatPowerAmount(
-        amount
-    )}<\/span>`;
+    appendStaticSvg(badge, POWER_ICON_SVG);
+    const amountLabel = createStyledElement(
+        "span",
+        "margin-left:4px;vertical-align:middle;",
+        formatPowerAmount(amount)
+    );
+    badge.appendChild(amountLabel);
     badge.classList.add("chzzk_power_badge");
     // 라이트 모드에서 아이콘 색상은 텍스트 색상과 동기화
     const svg = badge.querySelector("svg");
@@ -857,7 +885,7 @@ function createPowerBadge(amount, isInactive) {
             popupContainer.style.background = colors2.popupBg;
             popupContainer.style.color = colors2.popupFg;
             popupContainer.style.border = "1px solid #0008";
-            popupContainer.innerHTML = "";
+            popupContainer.replaceChildren();
 
             // 닫기(X) 버튼
             const action = document.createElement("div");
@@ -871,7 +899,10 @@ function createPowerBadge(amount, isInactive) {
             closeBtn.className = "chzzk_power_popup_close_button";
             closeBtn.setAttribute("type", "button");
             closeBtn.setAttribute("aria-label", "팝업 닫기");
-            closeBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20" fill="none"><path fill="currentColor" d="M16.6 4.933A1.083 1.083 0 1 0 15.066 3.4L10 8.468 4.933 3.4A1.083 1.083 0 0 0 3.4 4.933L8.468 10 3.4 15.067A1.083 1.083 0 1 0 4.933 16.6L10 11.532l5.067 5.067a1.083 1.083 0 1 0 1.532-1.532L11.532 10l5.067-5.067Z"/></svg>`;
+            appendStaticSvg(
+                closeBtn,
+                `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20" fill="none"><path fill="currentColor" d="M16.6 4.933A1.083 1.083 0 1 0 15.066 3.4L10 8.468 4.933 3.4A1.083 1.083 0 0 0 3.4 4.933L8.468 10 3.4 15.067A1.083 1.083 0 1 0 4.933 16.6L10 11.532l5.067 5.067a1.083 1.083 0 1 0 1.532-1.532L11.532 10l5.067-5.067Z"/></svg>`
+            );
             closeBtn.style.background = "none";
             closeBtn.style.border = "none";
             closeBtn.style.color = colors2.popupFg;
@@ -933,7 +964,7 @@ function createPowerBadge(amount, isInactive) {
                     const filtered = arr
                         .filter((x) => x.amount >= 100)
                         .sort((a, b) => b.amount - a.amount);
-                    // HTML 테이블 생성
+                    // 안전한 DOM API로 채널별 잔액 목록 생성
                     const table = document.createElement("div");
                     table.style.width = "100%";
                     table.style.overflowY = "auto";
@@ -945,41 +976,83 @@ function createPowerBadge(amount, isInactive) {
                         (sum, x) => sum + x.amount,
                         0
                     );
-                    table.innerHTML = `
-            <div style="font-weight:bold;font-size:19px;margin-bottom:4px;">누적 파워: ${totalPower.toLocaleString()}</div>
-            <div style="font-weight:bold;font-size:17px;margin-bottom:8px;">채널별 통나무 파워</div>
-            <div style="color:#aaa;font-size:12px;margin-bottom:16px;">100 파워 이상 보유한 채널만 표시합니다.<br>비활성화 된 채널은 회색으로 표시됩니다.</div>
-            <div style="display:flex;flex-direction:column;gap:10px;">
-              ${filtered
-                  .map(
-                      (x, i) => `
-                <div style=\"display:flex;align-items:center;justify-content:space-between;padding:4px 0;\">
-                  <div style=\"display:flex;align-items:center;gap:12px;min-width:0;\">
-                    <span style=\"font-weight:bold;width:24px;text-align:right;color:${
-                        x.active ? "#2a6aff" : "#666"
-                    };font-size:17px;\">${i + 1}</span>
-                    <img src=\"${
-                        x.channelImageUrl ? x.channelImageUrl : defaultImg
-                    }\" alt=\"\" style=\"width:36px;height:36px;border-radius:50%;object-fit:cover;background:#222;opacity:${
-                          x.active ? "1" : "0.5"
-                      };\">
-                    <span style=\"font-weight:bold;font-size:15px;white-space:normal;word-break:break-all;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;color:${
-                        x.active ? "inherit" : "#666"
-                    };\">${x.channelName}${
-                          x.verifiedMark
-                              ? ` <img src='https://ssl.pstatic.net/static/nng/glive/image/icon_official_mark.png' alt='인증' style='width:16px;height:16px;vertical-align:middle;margin-left:2px;'>`
-                              : ""
-                      }</span>
-                  </div>
-                  <span style=\"font-weight:bold;font-size:17px;letter-spacing:1px;color:${
-                      x.active ? "inherit" : "#666"
-                  };\">${Number(x.amount || 0).toLocaleString()}</span>
-                </div>
-              `
-                  )
-                  .join("")}
-            </div>
-          `;
+                    table.appendChild(
+                        createStyledElement(
+                            "div",
+                            "font-weight:bold;font-size:19px;margin-bottom:4px;",
+                            `누적 파워: ${totalPower.toLocaleString()}`
+                        )
+                    );
+                    table.appendChild(
+                        createStyledElement(
+                            "div",
+                            "font-weight:bold;font-size:17px;margin-bottom:8px;",
+                            "채널별 통나무 파워"
+                        )
+                    );
+                    const notice = createStyledElement(
+                        "div",
+                        "color:#aaa;font-size:12px;margin-bottom:16px;"
+                    );
+                    notice.append("100 파워 이상 보유한 채널만 표시합니다.");
+                    notice.appendChild(document.createElement("br"));
+                    notice.append("비활성화 된 채널은 회색으로 표시됩니다.");
+                    table.appendChild(notice);
+
+                    const list = createStyledElement(
+                        "div",
+                        "display:flex;flex-direction:column;gap:10px;"
+                    );
+                    filtered.forEach((entry, index) => {
+                        const row = createStyledElement(
+                            "div",
+                            "display:flex;align-items:center;justify-content:space-between;padding:4px 0;"
+                        );
+                        const channel = createStyledElement(
+                            "div",
+                            "display:flex;align-items:center;gap:12px;min-width:0;"
+                        );
+                        channel.appendChild(
+                            createStyledElement(
+                                "span",
+                                `font-weight:bold;width:24px;text-align:right;color:${entry.active ? "#2a6aff" : "#666"};font-size:17px;`,
+                                index + 1
+                            )
+                        );
+                        const image = createStyledElement(
+                            "img",
+                            `width:36px;height:36px;border-radius:50%;object-fit:cover;background:#222;opacity:${entry.active ? "1" : "0.5"};`
+                        );
+                        image.src = safeHttpsImageUrl(entry.channelImageUrl, defaultImg);
+                        image.alt = "";
+                        channel.appendChild(image);
+
+                        const name = createStyledElement(
+                            "span",
+                            `font-weight:bold;font-size:15px;white-space:normal;word-break:break-all;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;color:${entry.active ? "inherit" : "#666"};`,
+                            entry.channelName || "알 수 없는 채널"
+                        );
+                        if (entry.verifiedMark) {
+                            const verified = createStyledElement(
+                                "img",
+                                "width:16px;height:16px;vertical-align:middle;margin-left:2px;"
+                            );
+                            verified.src = "https://ssl.pstatic.net/static/nng/glive/image/icon_official_mark.png";
+                            verified.alt = "인증";
+                            name.appendChild(verified);
+                        }
+                        channel.appendChild(name);
+                        row.appendChild(channel);
+                        row.appendChild(
+                            createStyledElement(
+                                "span",
+                                `font-weight:bold;font-size:17px;letter-spacing:1px;color:${entry.active ? "inherit" : "#666"};`,
+                                Number(entry.amount || 0).toLocaleString()
+                            )
+                        );
+                        list.appendChild(row);
+                    });
+                    table.appendChild(list);
                     popupContainer.appendChild(table);
                 })
                 .catch((err) => {
@@ -1213,7 +1286,14 @@ function createClockBadge(timeText) {
         clockBadge.style.cursor = "pointer";
         clockBadge.style.background = colors.bg;
     });
-    clockBadge.innerHTML = `${CLOCK_ICON_SVG}<span style="margin-left:4px;vertical-align:middle;">${timeText}</span>`;
+    appendStaticSvg(clockBadge, CLOCK_ICON_SVG);
+    clockBadge.appendChild(
+        createStyledElement(
+            "span",
+            "margin-left:4px;vertical-align:middle;",
+            timeText
+        )
+    );
     clockBadge.classList.add("chzzk_clock_badge");
     // 라이트 모드에서 아이콘 색상은 텍스트 색상과 동기화
     const svg = clockBadge.querySelector("svg");
