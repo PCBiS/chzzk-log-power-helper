@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 
 const manifest = JSON.parse(await readFile("manifest.json", "utf8"));
 const content = await readFile("content.js", "utf8");
+const packageScript = await readFile("scripts/package.ps1", "utf8");
 
 assert.equal(manifest.manifest_version, 2);
 assert.equal(manifest.name, "치지직 통나무 파워 도우미");
@@ -21,5 +22,7 @@ assert.match(content, /text\.includes\("1시간"\)/);
 assert.match(content, /hasRecentViewInStorage \|\| hasRecentViewInMemory/);
 assert.doesNotMatch(content, /await chrome\.storage\./);
 assert.doesNotMatch(content, /\.innerHTML\s*=/);
+assert.match(packageScript, /AMO-UPLOAD-chzzk-log-power-helper-1\.3\.2\.zip/);
+assert.match(packageScript, /manifest\.json is not at the ZIP root/);
 
 console.log("Firefox port checks passed.");

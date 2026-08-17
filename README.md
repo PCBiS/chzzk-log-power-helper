@@ -16,12 +16,18 @@
 
 ## 임시 설치
 
-1. [Releases](../../releases)에서 ZIP을 받거나 `npm run package`로 패키지를 만듭니다.
+1. [Releases](../../releases)에서 `AMO-UPLOAD-chzzk-log-power-helper-1.3.2.zip`을 받거나 `npm run package`로 패키지를 만듭니다.
 2. Firefox에서 `about:debugging#/runtime/this-firefox`를 엽니다.
 3. **임시 부가 기능 로드**를 누릅니다.
 4. 압축을 푼 폴더의 `manifest.json`을 선택합니다.
 
 임시 부가 기능은 Firefox를 재시작하면 제거됩니다. 일반 Firefox에 영구 설치하려면 Mozilla 서명이 된 XPI가 필요합니다.
+
+## AMO 제출 시 주의
+
+AMO의 **부가 기능 파일 업로드**에는 릴리스 자산 `AMO-UPLOAD-chzzk-log-power-helper-1.3.2.zip`만 사용하세요. GitHub가 자동으로 제공하는 **Source code (zip)**, 저장소 전체를 받은 ZIP, 또는 `*-source.zip`은 확장 설치 파일이 아닙니다.
+
+올바른 ZIP을 열면 첫 화면에 `manifest.json`, `content.js`, `popup.js` 등이 바로 보여야 합니다. `chzzk-log-power-helper/manifest.json`처럼 상위 폴더가 먼저 보이면 AMO가 `manifest.json was not found` 오류를 냅니다. 패키징 스크립트는 이 구조를 자동 검사하며 잘못된 ZIP이면 실패합니다.
 
 ## 개발 및 검증
 

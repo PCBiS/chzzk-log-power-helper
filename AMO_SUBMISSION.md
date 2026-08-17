@@ -8,6 +8,13 @@
 - 지원 사이트: https://github.com/PCBiS/chzzk-log-power-helper
 - 개인정보처리방침: https://github.com/PCBiS/chzzk-log-power-helper/blob/main/PRIVACY.md
 
+## 업로드 파일
+
+- 부가 기능 파일: GitHub Releases의 `AMO-UPLOAD-chzzk-log-power-helper-1.3.2.zip`
+- GitHub의 자동 생성 `Source code (zip)` 또는 `*-source.zip`을 부가 기능 파일 칸에 업로드하지 마세요.
+- 올바른 배포 ZIP은 루트에 `manifest.json`이 있습니다. 상위 폴더를 포함하지 않습니다.
+- AMO가 별도의 소스 코드 제출을 요구할 때만 소스 ZIP을 소스 코드 칸에 제출합니다.
+
 ## 상세 설명
 
 치지직 라이브 방송에서 화면의 통나무 파워 받기 버튼을 감지해 자동으로 누르고, 보유 통나무 파워와 채널별 순위 및 획득·승부예측 로그를 표시합니다.
