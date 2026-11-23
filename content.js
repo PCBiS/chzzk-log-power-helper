@@ -1,3 +1,11 @@
+// 치지직 통나무 파워 도우미 (Firefox 포트)
+// 원본: 치지직 통나무 파워 자동 획득 — Copyright © 2025 chocolily
+//       https://github.com/MedeiaBeliar/chzzk_auto_log_power
+// 수정 고지(GPL-3.0 §5a): 2026-11-23 원본 v1.3.3(5462329)을 기준으로 Firefox Manifest V2용으로 수정함.
+//   - chrome.storage 콜백 API를 Promise 래퍼(storageGet/storageSet)로 감쌈
+//   - innerHTML 문자열 렌더링을 DOM API 렌더링으로 바꾸고 이미지 URL을 https로 제한함
+// 이 파일은 GNU General Public License v3.0에 따라 배포됩니다. LICENSE 파일을 참조하세요.
+
 console.log("[치지직 통나무 파워 자동 획득] 확장 프로그램 실행됨");
 
 // Firefox Manifest V2 exposes Chrome-compatible APIs through callbacks.
@@ -246,6 +254,7 @@ async function getChannelInfo(channelId) {
                 channelName: data.content.channelName,
                 channelImageUrl: data.content.channelImageUrl,
                 verifiedMark: data.content.verifiedMark,
+                verifiedMarkType: data.content.verifiedMarkType,
             };
         }
     } catch (error) {
@@ -260,6 +269,7 @@ async function getChannelInfo(channelId) {
         channelName: "알 수 없는 채널",
         channelImageUrl: null,
         verifiedMark: false,
+        verifiedMarkType: null,
     };
 }
 
@@ -275,6 +285,7 @@ async function savePowerLog(channelId, amount, method, testAmount = null, extra 
             channelName: channelInfo.channelName,
             channelImageUrl: channelInfo.channelImageUrl,
             verifiedMark: channelInfo.verifiedMark,
+            verifiedMarkType: channelInfo.verifiedMarkType,
             amount: amount,
             method: method, // 'follow', 'view', 'claimType' 등
         };
@@ -1037,8 +1048,10 @@ function createPowerBadge(amount, isInactive) {
                                 "img",
                                 "width:16px;height:16px;vertical-align:middle;margin-left:2px;"
                             );
-                            verified.src = "https://ssl.pstatic.net/static/nng/glive/image/icon_official_mark.png";
-                            verified.alt = "인증";
+                            const isChallenger =
+                                String(entry.verifiedMarkType).toUpperCase() === "CHALLENGER";
+                            verified.src = `https://ssl.pstatic.net/static/nng/glive/image/${isChallenger ? "icon_challenger_mark.png" : "icon_partner_mark.png"}`;
+                            verified.alt = isChallenger ? "챌린저" : "파트너";
                             name.appendChild(verified);
                         }
                         channel.appendChild(name);
@@ -1176,12 +1189,16 @@ const CLOCK_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="14" heigh
 // 다음 파워 획득 시간 계산 (content script용)
 function calculateNextPowerTimeForClock() {
     return new Promise((resolve) => {
-        chrome.storage.local.get(['powerLogs'], (result) => {
+        chrome.storage.local.get(['powerLogs', 'lastPowerAcquisitionTime'], (result) => {
             const logs = result.powerLogs || [];
             const now = new Date();
-            
-            // view 타입 로그만 기준으로 계산
-            const nextPowerTime = calculateFromLastLogForClock(logs, now);
+
+            // 실제 획득 시각을 우선 사용하고, 기존 사용자는 view 로그를 기준으로 계산한다.
+            const nextPowerTime = calculateFromLastLogForClock(
+                logs,
+                now,
+                result.lastPowerAcquisitionTime
+            );
             
             resolve(nextPowerTime);
         });
@@ -1189,31 +1206,27 @@ function calculateNextPowerTimeForClock() {
 }
 
 // 마지막 로그 기준으로 다음 획득 시간 계산 (content script용)
-function calculateFromLastLogForClock(logs, now) {
-    // view 타입 로그만 필터링
-    const viewLogs = logs.filter(log => log.method === 'view');
-    
-    if (viewLogs.length === 0) {
-        // view 타입 로그가 없으면 현재 시간부터 1시간 후
-        return new Date(now.getTime() + 60 * 60 * 1000);
+function calculateFromLastLogForClock(logs, now, lastAcquisitionTime = null) {
+    const viewLogs = logs
+        .filter(log => log && String(log.method).toLowerCase() === 'view')
+        .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    const referenceTime = new Date(lastAcquisitionTime || viewLogs[0]?.timestamp);
+
+    if (Number.isNaN(referenceTime.getTime())) {
+        // 기준 기록이 전혀 없을 때도 매번 now + 1시간으로 리셋되지 않도록
+        // 다음 정시를 고정 목표로 사용한다.
+        const nextHour = new Date(now);
+        nextHour.setMinutes(0, 0, 0);
+        nextHour.setHours(nextHour.getHours() + 1);
+        return nextHour;
     }
-    
-    // 가장 최근 view 타입 로그 찾기
-    const lastLog = viewLogs[0];
-    const lastLogTime = new Date(lastLog.timestamp);
-    
-    // 현재 시간의 분을 마지막 로그의 분으로 설정
-    const nextTime = new Date(now);
-    nextTime.setMinutes(lastLogTime.getMinutes());
-    nextTime.setSeconds(0);
-    nextTime.setMilliseconds(0);
-    
-    // 현재 시간보다 이전이면 다음 시간으로 설정
-    if (nextTime <= now) {
-        nextTime.setHours(nextTime.getHours() + 1);
+
+    const hourMs = 60 * 60 * 1000;
+    let nextTimeMs = referenceTime.getTime() + hourMs;
+    if (nextTimeMs <= now.getTime()) {
+        nextTimeMs += (Math.floor((now.getTime() - nextTimeMs) / hourMs) + 1) * hourMs;
     }
-    
-    return nextTime;
+    return new Date(nextTimeMs);
 }
 
 // 시계 표시 업데이트
@@ -1379,6 +1392,9 @@ async function clickPowerButtonIfExists() {
                 const amountToLog = await getViewPowerAmountBySubscription(channelId);
                 await savePowerLog(channelId, amountToLog, "view");
                 lastViewLogTimestampMs = now;
+                await storageSet("local", {
+                    lastPowerAcquisitionTime: new Date(now).toISOString(),
+                });
                 // 팝업에 파워 획득 알림
                 chrome.runtime.sendMessage({ action: 'powerAcquired' });
             }
@@ -1392,6 +1408,9 @@ async function clickPowerButtonIfExists() {
                 const amountToLog = await getViewPowerAmountBySubscription(channelId);
                 await savePowerLog(channelId, amountToLog, "view");
                 lastViewLogTimestampMs = now;
+                await storageSet("local", {
+                    lastPowerAcquisitionTime: new Date(now).toISOString(),
+                });
                 // 팝업에 파워 획득 알림
                 chrome.runtime.sendMessage({ action: 'powerAcquired' });
             }

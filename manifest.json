@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "치지직 통나무 파워 도우미",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "description": "치지직 파워(통나무) 자동 획득 및 파워 개수 표시",
   "homepage_url": "https://github.com/PCBiS/chzzk-log-power-helper",
   "content_scripts": [
