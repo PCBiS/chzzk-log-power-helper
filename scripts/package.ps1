@@ -2,7 +2,7 @@ $ErrorActionPreference = 'Stop'
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $distDir = Join-Path $projectRoot 'dist'
-$archivePath = Join-Path $distDir 'AMO-UPLOAD-chzzk-log-power-helper-1.3.2.zip'
+$archivePath = Join-Path $distDir 'AMO-UPLOAD-chzzk-log-power-helper-1.3.3.zip'
 
 New-Item -ItemType Directory -Path $distDir -Force | Out-Null
 if (Test-Path -LiteralPath $archivePath) {

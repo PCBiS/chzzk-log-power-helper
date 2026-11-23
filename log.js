@@ -1,3 +1,11 @@
+// 치지직 통나무 파워 도우미 (Firefox 포트)
+// 원본: 치지직 통나무 파워 자동 획득 — Copyright © 2025 chocolily
+//       https://github.com/MedeiaBeliar/chzzk_auto_log_power
+// 수정 고지(GPL-3.0 §5a): 2026-11-23 원본 v1.3.3(5462329)을 기준으로 Firefox Manifest V2용으로 수정함.
+//   - chrome.storage 콜백 API를 Promise 래퍼(storageGet/storageSet)로 감쌈
+//   - innerHTML 문자열 렌더링을 DOM API 렌더링으로 바꾸고 이미지 URL을 https로 제한함
+// 이 파일은 GNU General Public License v3.0에 따라 배포됩니다. LICENSE 파일을 참조하세요.
+
 let allLogs = [];
 let filteredLogs = [];
 
@@ -348,7 +356,8 @@ function updatePeriodStats() {
     if (allLogs.length > 0) {
         const firstLog = new Date(allLogs[allLogs.length - 1].timestamp);
         const lastLog = new Date(allLogs[0].timestamp);
-        allDateRange = `${firstLog.toLocaleDateString('ko-KR', { month: 'short', day: 'numeric' })} ~ ${lastLog.toLocaleDateString('ko-KR', { month: 'short', day: 'numeric' })}`;
+        const allPeriodDateOptions = { year: '2-digit', month: 'long', day: 'numeric' };
+        allDateRange = `${firstLog.toLocaleDateString('ko-KR', allPeriodDateOptions)} ~ ${lastLog.toLocaleDateString('ko-KR', allPeriodDateOptions)}`;
     }
     
     // 예측 별도 집계 및 메인 통계 업데이트
@@ -472,8 +481,9 @@ function renderLogs() {
             const verified = createElement('img', {
                 cssText: 'width:16px;height:16px;vertical-align:middle;margin-left:2px;',
             });
-            verified.src = 'https://ssl.pstatic.net/static/nng/glive/image/icon_official_mark.png';
-            verified.alt = '인증';
+            const isChallenger = String(log.verifiedMarkType).toUpperCase() === 'CHALLENGER';
+            verified.src = `https://ssl.pstatic.net/static/nng/glive/image/${isChallenger ? 'icon_challenger_mark.png' : 'icon_partner_mark.png'}`;
+            verified.alt = isChallenger ? '챌린저' : '파트너';
             link.appendChild(verified);
         }
         channelName.appendChild(link);
@@ -1107,6 +1117,14 @@ async function clearAllLogs() {
     const ok = await showConfirm('모든 로그를 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.', { title: '모든 로그 삭제', okText: '삭제', cancelText: '취소', destructive: true });
     if (ok) {
         try {
+            const latestViewLog = allLogs
+                .filter(log => log && String(log.method).toLowerCase() === 'view')
+                .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0];
+            if (latestViewLog && !Number.isNaN(new Date(latestViewLog.timestamp).getTime())) {
+                await storageSet("local", {
+                    lastPowerAcquisitionTime: latestViewLog.timestamp,
+                });
+            }
             await storageRemove("local", ['powerLogs']);
             allLogs = [];
             filteredLogs = [];
